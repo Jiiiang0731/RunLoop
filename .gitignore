@@ -1,0 +1,39 @@
+# ===== 密钥与私密配置（严禁提交） =====
+.env
+.env.*
+!.env.example
+config/*.local
+config/*.key
+*.key
+*.pem
+*.jks
+*.keystore
+key.properties
+
+# ===== Python =====
+__pycache__/
+*.pyc
+.venv/
+venv/
+backend/.venv/
+
+# ===== Flutter / Dart =====
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+build/
+pubspec.lock
+*.iml
+
+# ===== Android =====
+android/.gradle/
+android/local.properties
+android/app/.cxx/
+android/key.properties
+android/app/src/main/java/io/flutter/plugins/GeneratedPluginRegistrant.java
+
+# ===== IDE / 系统 =====
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
