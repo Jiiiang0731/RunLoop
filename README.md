@@ -8,7 +8,8 @@
 
 - ✅ 阶段 0：技术可行性报告 → `docs/feasibility.md`
 - ✅ 阶段 1：15km 闭合环线最小验证 → `docs/test_report.md`（3 候选，误差 +274/−322/+185m，闭合 0.7m）
-- ⏳ 阶段 2 起：正式移动端开发
+- ✅ 阶段 2：算法封装 + 路线评分 + 单元测试（25 用例通过）→ `backend/route_generator/`
+- ⏳ 阶段 3 起：Flutter 移动端（安装 Flutter/Android SDK/JDK，创建 Android 项目，确定 applicationId 与 SHA1）
 
 ## 目录结构
 

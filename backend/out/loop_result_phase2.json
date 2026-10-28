@@ -1,0 +1,137 @@
+{
+  "target_m": 15000,
+  "start_gcj02": "121.552563,31.215725",
+  "total_api_calls": 55,
+  "total_elapsed_s": 19.73,
+  "candidates": [
+    {
+      "seed": 1,
+      "error": null,
+      "distance": 15274.0,
+      "error_m": 274.0,
+      "closure_m": 0.65,
+      "start_snap_m": 18.89,
+      "n_points": 671,
+      "segments": 11,
+      "score": 81.2,
+      "score_components": [
+        {
+          "name": "distance_error",
+          "score": 100.0,
+          "available": true,
+          "detail": "误差 +274m"
+        },
+        {
+          "name": "closure",
+          "score": 100.0,
+          "available": true,
+          "detail": "闭合 0.65m"
+        },
+        {
+          "name": "repetition",
+          "score": 43.5,
+          "available": true,
+          "detail": "重复路段 29.1%"
+        },
+        {
+          "name": "park_greenway",
+          "score": null,
+          "available": false,
+          "detail": "暂无可靠数据源"
+        },
+        {
+          "name": "road_safety",
+          "score": null,
+          "available": false,
+          "detail": "暂无可靠数据源"
+        }
+      ],
+      "api_calls": 22,
+      "elapsed_s": 8.81,
+      "history": [
+        {
+          "iter": 0,
+          "R": 1404.3,
+          "distance": 15830.0,
+          "err": 830.0,
+          "closure_m": 0.65
+        },
+        {
+          "iter": 1,
+          "R": 1360.1,
+          "distance": 15274.0,
+          "err": 274.0,
+          "closure_m": 0.65
+        }
+      ]
+    },
+    {
+      "seed": 2,
+      "error": null,
+      "distance": 14678.0,
+      "error_m": -322.0,
+      "closure_m": 0.65,
+      "start_snap_m": 18.89,
+      "n_points": 734,
+      "segments": 11,
+      "score": 79.8,
+      "score_components": [
+        {
+          "name": "distance_error",
+          "score": 98.9,
+          "available": true,
+          "detail": "误差 -322m"
+        },
+        {
+          "name": "closure",
+          "score": 100.0,
+          "available": true,
+          "detail": "闭合 0.65m"
+        },
+        {
+          "name": "repetition",
+          "score": 40.8,
+          "available": true,
+          "detail": "重复路段 30.4%"
+        },
+        {
+          "name": "park_greenway",
+          "score": null,
+          "available": false,
+          "detail": "暂无可靠数据源"
+        },
+        {
+          "name": "road_safety",
+          "score": null,
+          "available": false,
+          "detail": "暂无可靠数据源"
+        }
+      ],
+      "api_calls": 33,
+      "elapsed_s": 10.92,
+      "history": [
+        {
+          "iter": 0,
+          "R": 1404.3,
+          "distance": 15945.0,
+          "err": 945.0,
+          "closure_m": 0.65
+        },
+        {
+          "iter": 1,
+          "R": 1354.4,
+          "distance": 15620.0,
+          "err": 620.0,
+          "closure_m": 0.65
+        },
+        {
+          "iter": 2,
+          "R": 1322.1,
+          "distance": 14678.0,
+          "err": -322.0,
+          "closure_m": 0.65
+        }
+      ]
+    }
+  ]
+}
