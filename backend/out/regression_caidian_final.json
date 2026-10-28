@@ -1,0 +1,90 @@
+[
+  {
+    "target": 5000,
+    "success": true,
+    "elapsed": 48.4,
+    "calls": 143,
+    "candidates": [
+      {
+        "seed": 1,
+        "dist": 5092.0,
+        "err": 92.0,
+        "closure": 0.56,
+        "score": 66.7
+      },
+      {
+        "seed": 2,
+        "dist": 5098.0,
+        "err": 98.0,
+        "closure": 0.56,
+        "score": 71.3
+      }
+    ]
+  },
+  {
+    "target": 10000,
+    "success": true,
+    "elapsed": 42.0,
+    "calls": 121,
+    "candidates": [
+      {
+        "seed": 1,
+        "dist": 9989.0,
+        "err": -11.0,
+        "closure": 0.56,
+        "score": 67.3
+      },
+      {
+        "seed": 2,
+        "dist": 10366.0,
+        "err": 366.0,
+        "closure": 0.56,
+        "score": 74.5
+      }
+    ]
+  },
+  {
+    "target": 15000,
+    "success": true,
+    "elapsed": 67.1,
+    "calls": 198,
+    "candidates": [
+      {
+        "seed": 1,
+        "dist": 14742.0,
+        "err": -258.0,
+        "closure": 0.56,
+        "score": 74.4
+      },
+      {
+        "seed": 2,
+        "dist": 15096.0,
+        "err": 96.0,
+        "closure": 0.56,
+        "score": 77.6
+      }
+    ]
+  },
+  {
+    "target": 20000,
+    "success": true,
+    "elapsed": 40.9,
+    "calls": 121,
+    "candidates": [
+      {
+        "seed": 1,
+        "dist": 20350.0,
+        "err": 350.0,
+        "closure": 0.56,
+        "score": 70.4
+      },
+      {
+        "seed": 2,
+        "dist": 20052.0,
+        "err": 52.0,
+        "closure": 0.56,
+        "score": 67.8
+      }
+    ]
+  }
+]
