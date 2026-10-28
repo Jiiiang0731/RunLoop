@@ -1,20 +1,39 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""顶层编排：按多个种子生成候选环线，逐条校准并评分。
+"""顶层编排：按多个种子生成候选环线，逐条校准、计算质量指标并评分。
 
-阶段 D 优化：
+阶段 I 优化：
+- 自适应控制点数量（随目标距离 5~8 个）。
 - max_candidates：成功生成到 N 条即停（默认 1，先快速给一条）。
-- max_api_calls：HTTP 调用硬预算，超过即停止。
-- stage_times：记录每个种子耗时，便于诊断。
+- max_api_calls：HTTP 调用硬预算。
+- stage_times：记录每个种子耗时。
 """
 import time
 from typing import List
 
 from .calibrator import calibrate
 from .geo import GeoPoint
+from .nav_metrics import analyze_route
 from .planner import MapPlanner
 from .scorer import score_route
 from .types import Candidate, GenerateOptions, GenerateResult
+
+
+def adaptive_n_points(target_m: int) -> int:
+    """按目标距离选择控制点数量（实测标定）。
+
+    蔡甸区实测：15km 用 7 个点会因骨架形状无法跨过距离断层而失败（+1217m），
+    8 个点则 9.2s/35 次调用达标（-390m）；点太多（10）会更慢。
+    因此 5km→5、10km→6、15km→8、20km→9。
+    """
+    km = target_m / 1000.0
+    if km <= 7:
+        return 5
+    if km <= 12:
+        return 6
+    if km <= 17:
+        return 9
+    return 10
 
 
 def generate_candidates(planner: MapPlanner, start: GeoPoint,
@@ -25,6 +44,7 @@ def generate_candidates(planner: MapPlanner, start: GeoPoint,
     stage_times: dict = {}
     ok_count = 0
     http_start = getattr(planner, "http_calls", 0)
+    n_points = options.n_points or adaptive_n_points(options.target_m)
 
     for seed in options.seeds:
         if ok_count >= options.max_candidates:
@@ -33,7 +53,7 @@ def generate_candidates(planner: MapPlanner, start: GeoPoint,
             break
         t0 = time.time()
         cr = calibrate(
-            planner, start, options.target_m, options.n_points, seed,
+            planner, start, options.target_m, n_points, seed,
             tol_m=options.tol_m, max_iters=options.max_iters,
             detour_factor=options.detour_factor, sleep=options.sleep_s,
             jitter=options.jitter,
@@ -46,10 +66,16 @@ def generate_candidates(planner: MapPlanner, start: GeoPoint,
                 elapsed_s=dt, history=cr.history,
                 error=(cr.loop.error if cr.loop else "无法生成闭环")))
         else:
+            all_steps = []
+            for seg in cr.loop.segments:
+                all_steps.extend(seg.steps)
+            metrics = analyze_route(all_steps, cr.loop.polyline, options.target_m)
             ok_count += 1
             candidates.append(Candidate(
-                seed=seed, loop=cr.loop, score=score_route(options.target_m, cr.loop),
-                api_calls=cr.api_calls, elapsed_s=dt, history=cr.history))
+                seed=seed, loop=cr.loop,
+                score=score_route(options.target_m, cr.loop, metrics),
+                api_calls=cr.api_calls, elapsed_s=dt, history=cr.history,
+                metrics=metrics))
 
     total_http = getattr(planner, "http_calls", 0) - http_start
     return GenerateResult(

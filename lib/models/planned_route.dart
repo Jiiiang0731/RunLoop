@@ -91,6 +91,8 @@ class PlannedRoute {
   final List<ScoreItem> scoreComponents;
   final List<RouteStep> steps;
   final List<OverlapGroup> overlaps;
+  /// 路线质量指标（turns / turn_density / straight_max_m / repetition_ratio ...）。
+  final Map<String, dynamic> metrics;
 
   const PlannedRoute({
     required this.seed,
@@ -105,6 +107,7 @@ class PlannedRoute {
     required this.scoreComponents,
     required this.steps,
     this.overlaps = const <OverlapGroup>[],
+    this.metrics = const <String, dynamic>{},
   });
 
   /// 该路线是否可安全进入跑步流程（距离达标 + 闭合达标）。
@@ -161,6 +164,7 @@ class PlannedRoute {
       overlaps: ((json['overlaps'] as List<dynamic>?) ?? <dynamic>[])
           .map((dynamic e) => OverlapGroup.fromJson(e as Map<String, dynamic>))
           .toList(),
+      metrics: (json['metrics'] as Map<String, dynamic>?) ?? <String, dynamic>{},
     );
   }
 }

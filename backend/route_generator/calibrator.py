@@ -15,8 +15,9 @@ from .loop_builder import build_loop
 from .planner import MapPlanner
 from .types import CalibrateResult
 
-# 精修时尝试的环骨架旋转角度（度）
-_REFINE_ANGLES = (30.0, 75.0, 120.0, 165.0, 210.0, 255.0)
+# 精修时尝试的环骨架旋转角度（度）：只取 3 个差异较大的方向，
+# 既保留跨过「距离断层」的能力，又把调用数控制住。
+_REFINE_ANGLES = (45.0, 120.0, 210.0)
 
 
 def calibrate(planner: MapPlanner, start: GeoPoint, target_m: int, n_points: int,

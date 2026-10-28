@@ -127,6 +127,7 @@ def _serialize_candidate(c, target_m, tol_m):
         "segments_count": len(loop.segments),
         "score": score.total if score else None,
         "score_components": score_components,
+        "metrics": c.metrics or {},
         "polyline": [[round(p[0], 6), round(p[1], 6)] for p in poly],
         "overlaps": detect_overlaps(poly),
         "steps": _serialize_steps(loop.segments),
@@ -150,10 +151,11 @@ def generate():
         tol_m = int(data.get("tol_m", 500))
         seeds = data.get("seeds") or [1]
         seeds = [int(s) for s in seeds][:3]
-        points = int(data.get("points", 10))
+        points = int(data.get("points", 0))  # 0 = 按目标距离自适应
         detour = float(data.get("detour_factor", 1.7))
         max_candidates = int(data.get("max_candidates", 1))
         max_api_calls = int(data.get("max_api_calls", 600))
+        sleep_s = float(data.get("sleep_s", 0.05))
     except (TypeError, ValueError) as e:
         return jsonify({"success": False, "error": f"参数错误：{e}", "error_code": "BAD_REQUEST"}), 400
 
@@ -172,7 +174,7 @@ def generate():
             tol_m=tol_m,
             max_iters=8,
             detour_factor=detour,
-            sleep_s=0.02,
+            sleep_s=sleep_s,
             max_candidates=max(1, min(3, max_candidates)),
             max_api_calls=max(50, min(1200, max_api_calls)),
         )

@@ -87,7 +87,7 @@ class CalibrateResult:
 @dataclass
 class GenerateOptions:
     target_m: int
-    n_points: int = 10
+    n_points: int = 0          # 0 = 按目标距离自适应
     seeds: List[int] = field(default_factory=lambda: [1, 2, 3])
     tol_m: int = 500
     max_iters: int = 8
@@ -107,6 +107,7 @@ class Candidate:
     elapsed_s: float
     history: List[dict]
     error: Optional[str] = None
+    metrics: Optional[dict] = None
 
 
 @dataclass

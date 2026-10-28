@@ -16,8 +16,10 @@ from .calibrator import calibrate
 from .scorer import (
     distance_error_score, closure_score, repetition_ratio, repetition_score,
     score_route, DEFAULT_WEIGHTS,
+    turn_density_score, long_straight_score, sharp_short_score,
 )
-from .generator import generate_candidates
+from .nav_metrics import analyze_route, detect_turns
+from .generator import generate_candidates, adaptive_n_points
 
 __all__ = [
     "GeoPoint", "haversine", "polyline_length", "parse_polyline",
@@ -27,5 +29,8 @@ __all__ = [
     "MapPlanner", "AmapWalkingPlanner", "MockPlanner",
     "generate_ring", "build_loop", "calibrate",
     "distance_error_score", "closure_score", "repetition_ratio", "repetition_score",
-    "score_route", "DEFAULT_WEIGHTS", "generate_candidates",
+    "score_route", "DEFAULT_WEIGHTS",
+    "turn_density_score", "long_straight_score", "sharp_short_score",
+    "analyze_route", "detect_turns", "adaptive_n_points",
+    "generate_candidates",
 ]

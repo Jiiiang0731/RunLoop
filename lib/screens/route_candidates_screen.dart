@@ -694,6 +694,7 @@ class _RouteCandidatesScreenState extends State<RouteCandidatesScreen>
             ],
           ),
         ),
+        _buildMetricsBar(current),
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
           child: Row(
@@ -746,6 +747,54 @@ class _RouteCandidatesScreenState extends State<RouteCandidatesScreen>
         ),
       ],
     );
+  }
+
+  Widget _buildMetricsBar(PlannedRoute r) {
+    final Map<String, dynamic> m = r.metrics;
+    final int turns = (m['turns'] as num?)?.toInt() ?? 0;
+    final double density = (m['turn_density'] as num?)?.toDouble() ?? 0;
+    final double maxStraight = (m['straight_max_m'] as num?)?.toDouble() ?? 0;
+    final double ratio300 = (m['straight_ratio_300'] as num?)?.toDouble() ?? 0;
+    final double rep = (m['repetition_ratio'] as num?)?.toDouble() ?? 0;
+    final int shortTurns = (m['short_consecutive'] as num?)?.toInt() ?? 0;
+    final int sharp = (m['sharp_turns'] as num?)?.toInt() ?? 0;
+    final Color color = _colors[_selected % _colors.length];
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 6, 12, 2),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          Row(
+            children: <Widget>[
+              Text('$turns 次转弯 · ${density.toStringAsFixed(1)} 次/km',
+                  style: const TextStyle(fontSize: 12)),
+              const Spacer(),
+              Text('最长直行 ${(maxStraight / 1000).toStringAsFixed(1)} km',
+                  style: const TextStyle(fontSize: 12)),
+            ],
+          ),
+          Row(
+            children: <Widget>[
+              Text(
+                '>300m 直行占比 ${(ratio300 * 100).toStringAsFixed(0)}% · 重复 ${(rep * 100).toStringAsFixed(0)}%',
+                style: const TextStyle(fontSize: 12),
+              ),
+              const Spacer(),
+              Text(_qualityLabel(density, ratio300, shortTurns, sharp),
+                  style: TextStyle(fontSize: 12, color: color, fontWeight: FontWeight.bold)),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 定性标签：必须来自真实指标，不能只按总分推测。
+  static String _qualityLabel(double density, double ratio300, int shortTurns, int sharp) {
+    if (density <= 0.6 && ratio300 >= 0.4) return '少转弯 · 长直路段较多';
+    if (shortTurns >= 2 || sharp >= 3) return '转弯较多 · 有连续短转弯';
+    if (density <= 1.0) return '转弯适中';
+    return '转弯较多';
   }
 
   Widget _stepsList(PlannedRoute r) {
