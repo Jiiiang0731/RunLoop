@@ -10,7 +10,8 @@
 - ✅ 阶段 1：15km 闭合环线最小验证 → `docs/test_report.md`（3 候选，误差 +274/−322/+185m，闭合 0.7m）
 - ✅ 阶段 2：算法封装 + 路线评分 + 单元测试（25 用例通过）→ `backend/route_generator/`
 - ✅ 阶段 3：环境安装（Flutter/Android SDK/JDK17）+ 项目创建 + APK 构建（debug/release）→ `dist/`
-- ⏳ 阶段 4 起：GPS 运动记录 / 地图展示 / 导航 / 历史统计
+- ✅ 阶段 4（地图）：高德地图 SDK 接入 + 定位 + APK 构建（含原生库）→ `docs/phase4_map_report.md`
+- ⏳ 阶段 4（GPS）：跑步记录/锁屏后台/总结（代码已就绪，待真机验证）
 
 ## 目录结构
 
@@ -80,17 +81,22 @@ python backend/loop_gen.py --target 15000 --seeds 1,2,3   # 生成 3 条约 15km
 
 ## 构建状态与 APK
 
-✅ 已成功构建（Flutter 3.47.8 / Android SDK 36 / JDK 17）：
+✅ 已成功构建（Flutter 3.47.8 / Android SDK 36 / JDK 17），含高德地图 SDK：
 
 | 文件 | 用途 | 大小 |
 | --- | --- | --- |
-| `dist/RunLoop-环跑-Android.apk` | 正式版（Release 签名 + R8 优化） | 42.1 MB |
-| `dist/RunLoop-环跑-Android-debug.apk` | 调试版（Debug 签名，便于联调） | 143.6 MB |
+| `dist/RunLoop-环跑-Android.apk` | 正式版（Release 签名 + R8 优化） | 70.4 MB |
+| `dist/RunLoop-环跑-Android-debug.apk` | 调试版（Debug 签名） | 188.7 MB |
 
 - 应用名 **环跑**，applicationId `com.runloop.app`（已用 aapt 校验）。
-- 构建：`flutter build apk --debug` / `flutter build apk --release`。
+- 地图 SDK：`com.amap.api:3dmap:8.1.0` + `location:5.6.0`（与插件 `compileOnly` 版本一致）；APK 内含 `libAMapSDK_MAP_v8_1_0.so`（arm64-v8a/armeabi-v7a/x86_64）。
+- **AMap Key 采用构建注入**（不硬编码、不入库）：Key 存于 `android/amap_key.properties`（gitignore），manifest 用 `${AMAP_API_KEY}` 占位符；Dart 侧用 `--dart-define=AMAP_ANDROID_KEY=...`。构建命令：
+  ```bash
+  flutter build apk --debug --dart-define=AMAP_ANDROID_KEY=<你的Android SDK Key>
+  flutter build apk --release --dart-define=AMAP_ANDROID_KEY=<你的Android SDK Key>
+  ```
 - 环境：Flutter SDK `<user-home>\flutter`，Android SDK `<user-home>\Android`，JDK 17 `<user-home>\jdk\jdk-17.0.21.0.2+1`。
-- 国内镜像已配：Gradle/Flutter 走腾讯云镜像，Maven 依赖走阿里云镜像（见 `android/settings.gradle.kts`、`android/gradle/wrapper/gradle-wrapper.properties`）。
+- 国内镜像：Gradle/Flutter 走腾讯云镜像，Maven 依赖走阿里云镜像 + mavenLocal；AMap 插件已 vendored 到 `packages/` 并打补丁（修复 Gradle 9 兼容性）。
 
 ## 已知限制（阶段 1 时点）
 

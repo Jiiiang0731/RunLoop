@@ -34,6 +34,13 @@ dependencies:
   # The following adds the Cupertino Icons font to your application.
   # Use with the CupertinoIcons class for iOS style icons.
   cupertino_icons: ^1.0.8
+  amap_flutter_map: ^3.0.0
+  amap_flutter_location: ^3.0.0
+  permission_handler: ^12.0.3
+  sqflite: ^2.4.5
+  flutter_foreground_task: ^11.0.3
+  amap_flutter_base: ^3.0.0
+  path: ^1.9.1
 
 dev_dependencies:
   flutter_test:
@@ -45,6 +52,17 @@ dev_dependencies:
   # package. See that file for information about deactivating specific lint
   # rules and activating additional ones.
   flutter_lints: ^6.0.0
+
+# 本地补丁版 AMap 插件：修复 Gradle 9 下 jcenter() 已被移除导致的构建失败。
+# 补丁仅将插件 build.gradle 中的 jcenter() 替换为 mavenCentral()，其余与原版一致。
+# 升级插件时请同步检查 packages/ 下补丁是否仍需要。
+dependency_overrides:
+  amap_flutter_map:
+    path: packages/amap_flutter_map
+  amap_flutter_location:
+    path: packages/amap_flutter_location
+  amap_flutter_base:
+    path: packages/amap_flutter_base
 
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec

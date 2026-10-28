@@ -9,6 +9,7 @@ config/*.key
 *.jks
 *.keystore
 key.properties
+amap_key.properties
 
 # ===== Python =====
 __pycache__/
@@ -19,6 +20,7 @@ backend/.venv/
 
 # ===== Flutter / Dart =====
 .dart_tool/
+.kotlin/
 .flutter-plugins
 .flutter-plugins-dependencies
 build/
