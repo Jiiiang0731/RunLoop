@@ -9,7 +9,8 @@
 - ✅ 阶段 0：技术可行性报告 → `docs/feasibility.md`
 - ✅ 阶段 1：15km 闭合环线最小验证 → `docs/test_report.md`（3 候选，误差 +274/−322/+185m，闭合 0.7m）
 - ✅ 阶段 2：算法封装 + 路线评分 + 单元测试（25 用例通过）→ `backend/route_generator/`
-- ⏳ 阶段 3 起：Flutter 移动端（安装 Flutter/Android SDK/JDK，创建 Android 项目，确定 applicationId 与 SHA1）
+- ✅ 阶段 3：环境安装（Flutter/Android SDK/JDK17）+ 项目创建 + APK 构建（debug/release）→ `dist/`
+- ⏳ 阶段 4 起：GPS 运动记录 / 地图展示 / 导航 / 历史统计
 
 ## 目录结构
 
@@ -37,11 +38,28 @@ runloop-app/
 - 移动端构建注入：`flutter run --dart-define=AMAP_WEB_KEY=你的Key`。
 - 生产分发建议后端代理，避免 Key 随 APK 分发。
 
-### 2. 高德 Android 地图 SDK Key（阶段 3 需要，与 Web 服务 Key 是不同类型）
-- 在高德开放平台「应用管理」新建 Android 平台 Key，绑定：
-  - 包名：`com.runloop.app`
-  - 调试/发布 SHA1 指纹（`keytool -list -v -keystore ...`）
-- 写入 `android/app/src/main/AndroidManifest.xml`（`<meta-data android:name="com.amap.api.v2.apikey" .../>`）与 `android/key.properties`（gitignore）。
+### 2. 高德 Android 地图 SDK Key（与 Web 服务 Key 是不同类型）
+
+在高德开放平台「应用管理」为 RunLoop 应用添加 **Android 平台** Key，需要以下三个值（已实测获取）：
+
+| 项 | 值 |
+| --- | --- |
+| applicationId（包名） | `com.runloop.app` |
+| Debug SHA1 | `44:EC:63:3D:DC:0B:85:7C:FB:66:54:A2:55:FB:C7:19:49:33:DF:FF` |
+| Release SHA1 | `E1:3D:D3:72:1D:A5:75:BA:E3:38:A0:6A:52:95:09:3E:89:A4:9A:8E` |
+
+可复现获取命令（本机 JDK 17 位于 `<user-home>\jdk\jdk-17.0.21.0.2+1\bin`）：
+
+```powershell
+# Debug SHA1（默认 debug.keystore，口令 android）
+keytool -list -v -keystore "$env:USERPROFILE\.android\debug.keystore" -alias androiddebugkey -storepass android
+
+# Release SHA1（正式签名密钥，口令见 android/key.properties，勿外泄）
+keytool -list -v -keystore android/keystore/runloop-release.jks -alias runloop -storepass <storePassword>
+```
+
+> ⚠️ Release SHA1 取决于 `android/keystore/runloop-release.jks`：若删除并重建该 keystore，SHA1 会变化，需到高德控制台同步更新。
+> Android 地图 SDK Key 后续写入 `android/app/src/main/AndroidManifest.xml`（`<meta-data android:name="com.amap.api.v2.apikey" .../>`）。
 
 ## 运行阶段 1 验证脚本
 
@@ -62,9 +80,17 @@ python backend/loop_gen.py --target 15000 --seeds 1,2,3   # 生成 3 条约 15km
 
 ## 构建状态与 APK
 
-- **当前环境尚未安装 Flutter 与 Android SDK，暂不能构建 APK**（详见 `docs/feasibility.md` §2）。
-- 磁盘（C 94GB / D 244GB 空闲）与网络满足安装条件；计划阶段 3 安装 Flutter SDK + Android SDK + JDK 17/21 并实测构建。
-- 最终 APK 目标：`dist/RunLoop-环跑-Android.apk`（调试版 + 发布版分别说明用途）。
+✅ 已成功构建（Flutter 3.47.8 / Android SDK 36 / JDK 17）：
+
+| 文件 | 用途 | 大小 |
+| --- | --- | --- |
+| `dist/RunLoop-环跑-Android.apk` | 正式版（Release 签名 + R8 优化） | 42.1 MB |
+| `dist/RunLoop-环跑-Android-debug.apk` | 调试版（Debug 签名，便于联调） | 143.6 MB |
+
+- 应用名 **环跑**，applicationId `com.runloop.app`（已用 aapt 校验）。
+- 构建：`flutter build apk --debug` / `flutter build apk --release`。
+- 环境：Flutter SDK `<user-home>\flutter`，Android SDK `<user-home>\Android`，JDK 17 `<user-home>\jdk\jdk-17.0.21.0.2+1`。
+- 国内镜像已配：Gradle/Flutter 走腾讯云镜像，Maven 依赖走阿里云镜像（见 `android/settings.gradle.kts`、`android/gradle/wrapper/gradle-wrapper.properties`）。
 
 ## 已知限制（阶段 1 时点）
 

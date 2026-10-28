@@ -24,6 +24,9 @@ backend/.venv/
 build/
 pubspec.lock
 *.iml
+.metadata
+_build_*.log
+*.apk
 
 # ===== Android =====
 android/.gradle/
