@@ -1,0 +1,317 @@
+{
+  "target_m": 15000,
+  "start_gcj02": "114.087279,30.536395",
+  "total_api_calls": 264,
+  "total_elapsed_s": 89.16,
+  "candidates": [
+    {
+      "seed": 1,
+      "error": null,
+      "distance": 15615.0,
+      "error_m": 615.0,
+      "closure_m": 0.56,
+      "start_snap_m": 13.11,
+      "n_points": 560,
+      "segments": 11,
+      "score": 68.8,
+      "score_components": [
+        {
+          "name": "distance_error",
+          "score": 84.2,
+          "available": true,
+          "detail": "误差 +615m"
+        },
+        {
+          "name": "closure",
+          "score": 100.0,
+          "available": true,
+          "detail": "闭合 0.56m"
+        },
+        {
+          "name": "repetition",
+          "score": 28.5,
+          "available": true,
+          "detail": "重复路段 36.3%"
+        },
+        {
+          "name": "park_greenway",
+          "score": null,
+          "available": false,
+          "detail": "暂无可靠数据源"
+        },
+        {
+          "name": "road_safety",
+          "score": null,
+          "available": false,
+          "detail": "暂无可靠数据源"
+        }
+      ],
+      "api_calls": 88,
+      "elapsed_s": 28.85,
+      "history": [
+        {
+          "iter": 0,
+          "R": 1404.3,
+          "distance": 24908.0,
+          "err": 9908.0,
+          "closure_m": 0.56
+        },
+        {
+          "iter": 1,
+          "R": 1069.1,
+          "distance": 19769.0,
+          "err": 4769.0,
+          "closure_m": 0.56
+        },
+        {
+          "iter": 2,
+          "R": 914.4,
+          "distance": 15843.0,
+          "err": 843.0,
+          "closure_m": 0.56
+        },
+        {
+          "iter": 3,
+          "R": 885.2,
+          "distance": 14023.0,
+          "err": -977.0,
+          "closure_m": 0.56
+        },
+        {
+          "iter": 4,
+          "R": 922.2,
+          "distance": 15615.0,
+          "err": 615.0,
+          "closure_m": 0.56
+        },
+        {
+          "iter": 5,
+          "R": 900.4,
+          "distance": 15757.0,
+          "err": 757.0,
+          "closure_m": 0.56
+        },
+        {
+          "iter": 6,
+          "R": 874.5,
+          "distance": 13965.0,
+          "err": -1035.0,
+          "closure_m": 0.56
+        },
+        {
+          "iter": 7,
+          "R": 913.3,
+          "distance": 15835.0,
+          "err": 835.0,
+          "closure_m": 0.56
+        }
+      ]
+    },
+    {
+      "seed": 2,
+      "error": null,
+      "distance": 13937.0,
+      "error_m": -1063.0,
+      "closure_m": 0.56,
+      "start_snap_m": 13.11,
+      "n_points": 506,
+      "segments": 11,
+      "score": 56.7,
+      "score_components": [
+        {
+          "name": "distance_error",
+          "score": 61.9,
+          "available": true,
+          "detail": "误差 -1063m"
+        },
+        {
+          "name": "closure",
+          "score": 100.0,
+          "available": true,
+          "detail": "闭合 0.56m"
+        },
+        {
+          "name": "repetition",
+          "score": 23.4,
+          "available": true,
+          "detail": "重复路段 38.8%"
+        },
+        {
+          "name": "park_greenway",
+          "score": null,
+          "available": false,
+          "detail": "暂无可靠数据源"
+        },
+        {
+          "name": "road_safety",
+          "score": null,
+          "available": false,
+          "detail": "暂无可靠数据源"
+        }
+      ],
+      "api_calls": 88,
+      "elapsed_s": 30.32,
+      "history": [
+        {
+          "iter": 0,
+          "R": 1404.3,
+          "distance": 23682.0,
+          "err": 8682.0,
+          "closure_m": 0.56
+        },
+        {
+          "iter": 1,
+          "R": 1095.4,
+          "distance": 19873.0,
+          "err": 4873.0,
+          "closure_m": 0.56
+        },
+        {
+          "iter": 2,
+          "R": 934.2,
+          "distance": 13825.0,
+          "err": -1175.0,
+          "closure_m": 0.56
+        },
+        {
+          "iter": 3,
+          "R": 981.9,
+          "distance": 17173.0,
+          "err": 2173.0,
+          "closure_m": 0.56
+        },
+        {
+          "iter": 4,
+          "R": 907.3,
+          "distance": 13696.0,
+          "err": -1304.0,
+          "closure_m": 0.56
+        },
+        {
+          "iter": 5,
+          "R": 959.2,
+          "distance": 13937.0,
+          "err": -1063.0,
+          "closure_m": 0.56
+        },
+        {
+          "iter": 6,
+          "R": 1003.1,
+          "distance": 17243.0,
+          "err": 2243.0,
+          "closure_m": 0.56
+        },
+        {
+          "iter": 7,
+          "R": 924.8,
+          "distance": 13789.0,
+          "err": -1211.0,
+          "closure_m": 0.56
+        }
+      ]
+    },
+    {
+      "seed": 3,
+      "error": null,
+      "distance": 15617.0,
+      "error_m": 617.0,
+      "closure_m": 0.56,
+      "start_snap_m": 13.11,
+      "n_points": 538,
+      "segments": 11,
+      "score": 69.7,
+      "score_components": [
+        {
+          "name": "distance_error",
+          "score": 84.2,
+          "available": true,
+          "detail": "误差 +617m"
+        },
+        {
+          "name": "closure",
+          "score": 100.0,
+          "available": true,
+          "detail": "闭合 0.56m"
+        },
+        {
+          "name": "repetition",
+          "score": 31.3,
+          "available": true,
+          "detail": "重复路段 35.0%"
+        },
+        {
+          "name": "park_greenway",
+          "score": null,
+          "available": false,
+          "detail": "暂无可靠数据源"
+        },
+        {
+          "name": "road_safety",
+          "score": null,
+          "available": false,
+          "detail": "暂无可靠数据源"
+        }
+      ],
+      "api_calls": 88,
+      "elapsed_s": 29.98,
+      "history": [
+        {
+          "iter": 0,
+          "R": 1404.3,
+          "distance": 21070.0,
+          "err": 6070.0,
+          "closure_m": 0.56
+        },
+        {
+          "iter": 1,
+          "R": 1161.6,
+          "distance": 19848.0,
+          "err": 4848.0,
+          "closure_m": 0.56
+        },
+        {
+          "iter": 2,
+          "R": 991.3,
+          "distance": 15619.0,
+          "err": 619.0,
+          "closure_m": 0.56
+        },
+        {
+          "iter": 3,
+          "R": 967.8,
+          "distance": 15617.0,
+          "err": 617.0,
+          "closure_m": 0.56
+        },
+        {
+          "iter": 4,
+          "R": 944.8,
+          "distance": 16013.0,
+          "err": 1013.0,
+          "closure_m": 0.56
+        },
+        {
+          "iter": 5,
+          "R": 909.0,
+          "distance": 16428.0,
+          "err": 1428.0,
+          "closure_m": 0.56
+        },
+        {
+          "iter": 6,
+          "R": 861.6,
+          "distance": 15914.0,
+          "err": 914.0,
+          "closure_m": 0.56
+        },
+        {
+          "iter": 7,
+          "R": 831.9,
+          "distance": 13848.0,
+          "err": -1152.0,
+          "closure_m": 0.56
+        }
+      ]
+    }
+  ]
+}

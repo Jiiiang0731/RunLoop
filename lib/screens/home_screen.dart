@@ -9,9 +9,10 @@ import '../app/config.dart';
 import '../models/location_result.dart';
 import '../services/location/location_service.dart';
 import 'history_screen.dart';
+import 'location_diagnostics_screen.dart';
 import 'run_screen.dart';
 
-/// 首页：高德地图 + 实时定位点 + 开始跑步入口。
+/// 首页：高德地图 + 实时定位点 + 定位状态/诊断入口 + 开始跑步。
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
 
@@ -20,58 +21,66 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
+  final LocationService _loc = LocationService.instance;
   AMapController? _controller;
   StreamSubscription<LocationResult>? _sub;
-  LocationResult? _location;
-  bool _locating = false;
-  String? _error;
-  Set<Marker> _markers = <Marker>{};
+  Timer? _timeoutTimer;
+  bool _timedOut = false;
   bool _hasMovedCamera = false;
+  String? _permError;
 
   @override
   void initState() {
     super.initState();
+    _sub = _loc.stream.listen(_onLocation);
     _initLocation();
   }
 
   Future<void> _initLocation() async {
     final bool granted = await _requestPermission();
     if (!granted) {
-      setState(() => _error = '定位权限被拒绝，无法显示当前位置');
+      setState(() => _permError = '定位权限被拒绝，无法获取当前位置');
       return;
     }
     if (!mounted) return;
-    setState(() => _locating = true);
-    _sub = LocationService.instance.stream.listen(_onLocation, onError: (Object e) {
-      if (mounted) setState(() => _error = '定位失败：$e');
-    });
-    LocationService.instance.start();
+    _startLocation();
   }
 
   Future<bool> _requestPermission() async {
     PermissionStatus status = await Permission.location.request();
-    if (status.isGranted) return true;
-    if (status.isPermanentlyDenied || status.isDenied) {
-      // 再次尝试（部分机型首次拒绝后会给出“永久拒绝”）
-      status = await Permission.location.request();
-    }
-    return status.isGranted;
+    if (status.isGranted || status.isLimited) return true;
+    status = await Permission.location.request();
+    return status.isGranted || status.isLimited;
+  }
+
+  void _startLocation() {
+    _loc.start();
+    _startTimeoutTimer();
+    if (mounted) setState(() {});
+  }
+
+  void _startTimeoutTimer() {
+    _timeoutTimer?.cancel();
+    _timedOut = false;
+    _timeoutTimer = Timer(const Duration(seconds: 15), () {
+      if (!mounted) return;
+      if (_loc.status == LocationStatus.waiting) {
+        setState(() => _timedOut = true);
+      }
+    });
+  }
+
+  void _retry() {
+    setState(() => _timedOut = false);
+    _loc.start();
+    _startTimeoutTimer();
+    setState(() {});
   }
 
   void _onLocation(LocationResult r) {
     if (!mounted) return;
-    if (r.hasError) {
-      setState(() => _error = '定位错误：${r.errorInfo ?? r.errorCode}');
-      return;
-    }
-    setState(() {
-      _location = r;
-      _locating = true;
-      _error = null;
-      _markers = <Marker>{
-        Marker(position: LatLng(r.latitude, r.longitude)),
-      };
-    });
+    setState(() {});
+    if (r.hasError) return;
     if (_controller != null && !_hasMovedCamera) {
       _hasMovedCamera = true;
       _controller!.moveCamera(
@@ -85,13 +94,12 @@ class _HomeScreenState extends State<HomeScreen> {
 
   void _onMapCreated(AMapController controller) {
     _controller = controller;
-    // 地图创建后再把当前位置作为中心（若有定位）。
-    final LocationResult? loc = _location;
-    if (loc != null && !_hasMovedCamera) {
+    final LocationResult? r = _loc.lastResult;
+    if (r != null && !_hasMovedCamera) {
       _hasMovedCamera = true;
       controller.moveCamera(
         CameraUpdate.newCameraPosition(
-          CameraPosition(target: LatLng(loc.latitude, loc.longitude), zoom: 16),
+          CameraPosition(target: LatLng(r.latitude, r.longitude), zoom: 16),
         ),
         animated: false,
       );
@@ -101,8 +109,17 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void dispose() {
     _sub?.cancel();
-    LocationService.instance.stop();
+    _timeoutTimer?.cancel();
+    _loc.stop();
     super.dispose();
+  }
+
+  Set<Marker> _markers() {
+    final LocationResult? r = _loc.lastResult;
+    if (r == null || r.hasError) return <Marker>{};
+    return <Marker>{
+      Marker(position: LatLng(r.latitude, r.longitude)),
+    };
   }
 
   @override
@@ -121,26 +138,14 @@ class _HomeScreenState extends State<HomeScreen> {
               hasAgree: true,
             ),
             initialCameraPosition: const CameraPosition(
-              target: LatLng(31.2304, 121.4737),
+              target: LatLng(30.536395, 114.087279),
               zoom: 13,
             ),
-            markers: _markers,
+            markers: _markers(),
             onMapCreated: _onMapCreated,
           ),
-          // 顶部信息栏
-          Positioned(
-            top: 0,
-            left: 0,
-            right: 0,
-            child: _buildTopBar(),
-          ),
-          // 底部操作区
-          Positioned(
-            left: 16,
-            right: 16,
-            bottom: 24,
-            child: _buildBottomBar(),
-          ),
+          Positioned(top: 0, left: 0, right: 0, child: _buildTopBar()),
+          Positioned(left: 16, right: 16, bottom: 24, child: _buildBottomBar()),
         ],
       ),
     );
@@ -151,70 +156,109 @@ class _HomeScreenState extends State<HomeScreen> {
       child: Padding(
         padding: const EdgeInsets.all(12),
         child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: <Widget>[
             Card(
               child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-                child: Row(
+                padding: const EdgeInsets.all(12),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: <Widget>[
-                    Expanded(
-                      child: Text(
-                        _error ?? '环跑 · 当前位置定位中…',
-                        style: TextStyle(
-                          color: _error != null ? Colors.red : Colors.black87,
+                    Row(
+                      children: <Widget>[
+                        Expanded(child: Text('环跑', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.green[800]))),
+                        IconButton(
+                          icon: const Icon(Icons.tune),
+                          tooltip: '定位诊断',
+                          onPressed: () {
+                            Navigator.push(context, MaterialPageRoute<void>(builder: (_) => const LocationDiagnosticsScreen()));
+                          },
                         ),
-                      ),
+                        IconButton(
+                          icon: const Icon(Icons.history),
+                          tooltip: '历史记录',
+                          onPressed: () {
+                            Navigator.push(context, MaterialPageRoute<void>(builder: (_) => const HistoryScreen()));
+                          },
+                        ),
+                      ],
                     ),
-                    IconButton(
-                      icon: const Icon(Icons.history),
-                      tooltip: '历史记录',
-                      onPressed: () {
-                        Navigator.push(
-                          context,
-                          MaterialPageRoute<void>(
-                            builder: (_) => const HistoryScreen(),
-                          ),
-                        );
-                      },
-                    ),
+                    const SizedBox(height: 4),
+                    Text(_statusText(), style: TextStyle(color: _statusColor())),
                   ],
                 ),
               ),
             ),
-            if (_location != null)
-              Card(
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-                  child: Text(
-                    '坐标 ${_location!.latitude.toStringAsFixed(6)}, '
-                    '${_location!.longitude.toStringAsFixed(6)} · '
-                    '精度 ${_location!.accuracy.toStringAsFixed(0)}m',
-                    style: const TextStyle(fontSize: 12),
-                  ),
-                ),
-              ),
           ],
         ),
       ),
     );
   }
 
+  String _statusText() {
+    if (_permError != null) return _permError!;
+    final LocationResult? r = _loc.lastResult;
+    switch (_loc.status) {
+      case LocationStatus.idle:
+        return '尚未开始定位';
+      case LocationStatus.waiting:
+        return _timedOut ? '定位超时（已等待 15 秒）。请检查手机定位开关、权限和网络，点击「重新定位」。' : '正在定位…（请稍候）';
+      case LocationStatus.success:
+        final String acc = r != null ? '精度 ${r.accuracy.toStringAsFixed(0)}m' : '';
+        final String upd = _loc.lastCallbackAt != null ? '更新 ${_fmt(_loc.lastCallbackAt!)}' : '';
+        return '定位成功：${r?.latitude.toStringAsFixed(6)}, ${r?.longitude.toStringAsFixed(6)} $acc $upd';
+      case LocationStatus.failed:
+        return '定位失败：${_loc.errorDetail ?? '未知错误'}（点击「重新定位」或查看诊断）';
+      case LocationStatus.timeout:
+        return '定位超时：请检查定位开关/权限/网络后点「重新定位」';
+    }
+  }
+
+  Color _statusColor() {
+    if (_permError != null) return Colors.red;
+    switch (_loc.status) {
+      case LocationStatus.success:
+        return Colors.green[800]!;
+      case LocationStatus.failed:
+      case LocationStatus.timeout:
+        return Colors.red;
+      case LocationStatus.waiting:
+        return _timedOut ? Colors.red : Colors.orange[800]!;
+      case LocationStatus.idle:
+        return Colors.grey;
+    }
+  }
+
+  static String _fmt(DateTime t) =>
+      '${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}:${t.second.toString().padLeft(2, '0')}';
+
   Widget _buildBottomBar() {
-    return FilledButton.icon(
-      onPressed: _locating
-          ? () {
-              Navigator.push(
-                context,
-                MaterialPageRoute<void>(builder: (_) => const RunScreen()),
-              );
-            }
-          : null,
-      icon: const Icon(Icons.directions_run),
-      label: const Padding(
-        padding: EdgeInsets.symmetric(vertical: 14),
-        child: Text('开始跑步', style: TextStyle(fontSize: 18)),
-      ),
+    final bool canStart = _loc.status == LocationStatus.success;
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: <Widget>[
+        if (!canStart)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: FilledButton.tonalIcon(
+              onPressed: _retry,
+              icon: const Icon(Icons.refresh),
+              label: const Text('重新定位'),
+            ),
+          ),
+        FilledButton.icon(
+          onPressed: canStart
+              ? () {
+                  Navigator.push(context, MaterialPageRoute<void>(builder: (_) => const RunScreen()));
+                }
+              : null,
+          icon: const Icon(Icons.directions_run),
+          label: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 14),
+            child: Text(canStart ? '开始跑步' : '定位成功后可开始跑步', style: const TextStyle(fontSize: 18)),
+          ),
+        ),
+      ],
     );
   }
 }

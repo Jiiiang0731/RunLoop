@@ -40,6 +40,13 @@ public class AMapLocationClientImpl implements AMapLocationListener {
     }
 
     /**
+     * 设置事件回调 sink（修复：订阅晚于 client 创建时，回传最新 sink，避免事件被丢弃）。
+     */
+    public void setEventSink(EventChannel.EventSink eventSink) {
+        this.mEventSink = eventSink;
+    }
+
+    /**
      * 开始定位
      */
     public void startLocation() {

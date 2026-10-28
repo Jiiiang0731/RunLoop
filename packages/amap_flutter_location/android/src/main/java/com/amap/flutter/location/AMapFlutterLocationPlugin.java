@@ -61,6 +61,12 @@ public class AMapFlutterLocationPlugin implements FlutterPlugin, MethodCallHandl
   @Override
   public void onListen(Object o, EventChannel.EventSink eventSink) {
     mEventSink = eventSink;
+    // 修复 Bug：将新 sink 回传给已创建的 client。
+    // 原逻辑下，若先 setLocationOption 创建 client、后订阅事件流，client 会拿到 null sink，
+    // 导致 onLocationChanged 里 `if (null == mEventSink) return;` 丢弃所有定位结果（一直「定位中」）。
+    for (Map.Entry<String, AMapLocationClientImpl> entry : locationClientMap.entrySet()) {
+      entry.getValue().setEventSink(eventSink);
+    }
   }
 
   @Override

@@ -25,6 +25,7 @@ class RunRecorder extends ChangeNotifier {
   StreamSubscription<LocationResult>? _sub;
 
   RunState _state = RunState.idle;
+  Timer? _ticker; // 每秒通知 UI 刷新（保证计时实时更新，不依赖 GPS 回调）
   final List<TrackPoint> _points = [];
   TrackPoint? _lastPoint;
   DateTime? _startTime;
@@ -86,6 +87,10 @@ class RunRecorder extends ChangeNotifier {
     _segmentStart = _startTime;
     _state = RunState.running;
     _sub = _stream.listen(_onLocation);
+    // 每秒刷新一次 UI（运行中才刷新），避免没有 GPS 回调时计时停留在 0。
+    _ticker = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (_state == RunState.running) notifyListeners();
+    });
     notifyListeners();
   }
 
@@ -141,6 +146,8 @@ class RunRecorder extends ChangeNotifier {
     final DateTime startTime = _startTime ?? endTime;
     _state = RunState.idle;
     _segmentStart = null;
+    _ticker?.cancel();
+    _ticker = null;
     _sub?.cancel();
     _sub = null;
 
@@ -159,6 +166,7 @@ class RunRecorder extends ChangeNotifier {
 
   @override
   void dispose() {
+    _ticker?.cancel();
     _sub?.cancel();
     super.dispose();
   }
