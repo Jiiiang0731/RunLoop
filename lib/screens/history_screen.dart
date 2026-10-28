@@ -37,6 +37,23 @@ class _HistoryScreenState extends State<HistoryScreen> {
           if (snap.connectionState != ConnectionState.done) {
             return const Center(child: CircularProgressIndicator());
           }
+          if (snap.hasError) {
+            return Center(
+              child: Padding(
+                padding: const EdgeInsets.all(24),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: <Widget>[
+                    const Icon(Icons.error_outline, color: Colors.red, size: 40),
+                    const SizedBox(height: 12),
+                    Text('读取历史记录失败：${snap.error}'),
+                    const SizedBox(height: 12),
+                    FilledButton.tonal(onPressed: _reload, child: const Text('重试')),
+                  ],
+                ),
+              ),
+            );
+          }
           final List<RunRecord> runs = snap.data ?? <RunRecord>[];
           if (runs.isEmpty) {
             return const Center(child: Text('还没有跑步记录'));

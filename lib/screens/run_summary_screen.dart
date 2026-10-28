@@ -32,12 +32,20 @@ class _RunSummaryScreenState extends State<RunSummaryScreen> {
       rpe: _rpe,
       note: _noteController.text.trim().isEmpty ? null : _noteController.text.trim(),
     );
-    await AppDatabase.instance.insertRun(withMeta);
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('已保存')),
-    );
-    Navigator.popUntil(context, (Route<dynamic> r) => r.isFirst);
+    try {
+      await AppDatabase.instance.insertRun(withMeta);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('已保存')),
+      );
+      Navigator.popUntil(context, (Route<dynamic> r) => r.isFirst);
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _saving = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('保存失败：$e')),
+      );
+    }
   }
 
   @override
