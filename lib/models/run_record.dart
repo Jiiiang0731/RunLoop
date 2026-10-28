@@ -7,11 +7,12 @@ class RunRecord {
   final int? id;
   final DateTime startTime;
   final DateTime? endTime;
-  final int durationSeconds; // 总时长（含暂停，不含暂停等待时间）
+  final int durationSeconds; // 总时长（不含暂停等待时间）
   final int movingSeconds; // 移动时长
   final double distanceMeters; // 距离（米）
   final double avgPaceSecondsPerKm; // 平均配速（秒/公里）
-  final List<TrackPoint> trackPoints; // 轨迹
+  final List<TrackPoint> trackPoints; // 实际 GPS 轨迹
+  final List<List<double>>? plannedRoute; // 本次所选规划路线 [[lng,lat],...]，可为空
   final int? rpe; // 主观疲劳 1-10
   final String? note;
 
@@ -24,6 +25,7 @@ class RunRecord {
     required this.distanceMeters,
     required this.avgPaceSecondsPerKm,
     required this.trackPoints,
+    this.plannedRoute,
     this.rpe,
     this.note,
   });
@@ -37,6 +39,7 @@ class RunRecord {
         'distance_m': distanceMeters,
         'avg_pace': avgPaceSecondsPerKm,
         'track_points': jsonEncode(trackPoints.map((p) => p.toJson()).toList()),
+        'planned_route': plannedRoute == null ? null : jsonEncode(plannedRoute),
         'rpe': rpe,
         'note': note,
       };
@@ -44,6 +47,15 @@ class RunRecord {
   factory RunRecord.fromMap(Map<String, dynamic> map) {
     final List<dynamic> rawPoints =
         jsonDecode(map['track_points'] as String) as List<dynamic>;
+    List<List<double>>? planned;
+    if (map['planned_route'] != null) {
+      planned = (jsonDecode(map['planned_route'] as String) as List<dynamic>)
+          .map((dynamic e) => <double>[
+                ((e as List<dynamic>)[0] as num).toDouble(),
+                (e[1] as num).toDouble(),
+              ])
+          .toList();
+    }
     return RunRecord(
       id: map['id'] as int?,
       startTime: DateTime.fromMillisecondsSinceEpoch(map['start_time'] as int),
@@ -55,8 +67,9 @@ class RunRecord {
       distanceMeters: (map['distance_m'] as num).toDouble(),
       avgPaceSecondsPerKm: (map['avg_pace'] as num).toDouble(),
       trackPoints: rawPoints
-          .map((p) => TrackPoint.fromJson(p as Map<String, dynamic>))
+          .map((dynamic p) => TrackPoint.fromJson(p as Map<String, dynamic>))
           .toList(),
+      plannedRoute: planned,
       rpe: map['rpe'] as int?,
       note: map['note'] as String?,
     );

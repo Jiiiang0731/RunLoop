@@ -7,12 +7,14 @@ import 'package:permission_handler/permission_handler.dart';
 
 import '../app/config.dart';
 import '../models/location_result.dart';
+import '../models/planned_route.dart';
 import '../services/location/location_service.dart';
+import '../services/route_api/route_api_service.dart';
 import 'history_screen.dart';
 import 'location_diagnostics_screen.dart';
-import 'run_screen.dart';
+import 'route_candidates_screen.dart';
 
-/// 首页：高德地图 + 实时定位点 + 定位状态/诊断入口 + 开始跑步。
+/// 首页：高德地图 + 实时定位 + 目标距离输入 + 生成闭环路线。
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
 
@@ -28,6 +30,13 @@ class _HomeScreenState extends State<HomeScreen> {
   bool _timedOut = false;
   bool _hasMovedCamera = false;
   String? _permError;
+
+  // 目标距离（公里）
+  final TextEditingController _targetController =
+      TextEditingController(text: '15');
+  bool _generating = false;
+
+  static const List<int> _quickKm = <int>[5, 10, 15, 20];
 
   @override
   void initState() {
@@ -106,11 +115,66 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
+  double? _parseTargetKm() {
+    final double? v = double.tryParse(_targetController.text.trim());
+    if (v == null || v.isNaN) return null;
+    if (v < 1 || v > 50) return null;
+    return v;
+  }
+
+  Future<void> _generateRoute() async {
+    final LocationResult? r = _loc.lastResult;
+    if (r == null || r.hasError) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('请先成功定位后再生成路线')),
+      );
+      return;
+    }
+    final double? targetKm = _parseTargetKm();
+    if (targetKm == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('请输入 1~50 之间的有效距离（公里）')),
+      );
+      return;
+    }
+    setState(() => _generating = true);
+    try {
+      final RouteApiService api = RouteApiService();
+      final RouteGenResult res = await api.generate(
+        lng: r.longitude,
+        lat: r.latitude,
+        targetM: targetKm * 1000,
+        tolM: 500,
+        seeds: <int>[1, 2, 3],
+        points: 10,
+      );
+      if (!mounted) return;
+      setState(() => _generating = false);
+      Navigator.push(
+        context,
+        MaterialPageRoute<void>(
+          builder: (_) => RouteCandidatesScreen(
+            originLng: r.longitude,
+            originLat: r.latitude,
+            targetM: targetKm * 1000,
+            routes: res.routes,
+            tolM: 500,
+          ),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _generating = false);
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('生成失败：$e')));
+    }
+  }
+
   @override
   void dispose() {
     _sub?.cancel();
     _timeoutTimer?.cancel();
     _loc.stop();
+    _targetController.dispose();
     super.dispose();
   }
 
@@ -145,7 +209,7 @@ class _HomeScreenState extends State<HomeScreen> {
             onMapCreated: _onMapCreated,
           ),
           Positioned(top: 0, left: 0, right: 0, child: _buildTopBar()),
-          Positioned(left: 16, right: 16, bottom: 24, child: _buildBottomBar()),
+          Positioned(left: 12, right: 12, bottom: 16, child: _buildRoutePanel()),
         ],
       ),
     );
@@ -155,41 +219,39 @@ class _HomeScreenState extends State<HomeScreen> {
     return SafeArea(
       child: Padding(
         padding: const EdgeInsets.all(12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: <Widget>[
-            Card(
-              child: Padding(
-                padding: const EdgeInsets.all(12),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
+        child: Card(
+          child: Padding(
+            padding: const EdgeInsets.all(12),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: <Widget>[
+                Row(
                   children: <Widget>[
-                    Row(
-                      children: <Widget>[
-                        Expanded(child: Text('环跑', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.green[800]))),
-                        IconButton(
-                          icon: const Icon(Icons.tune),
-                          tooltip: '定位诊断',
-                          onPressed: () {
-                            Navigator.push(context, MaterialPageRoute<void>(builder: (_) => const LocationDiagnosticsScreen()));
-                          },
-                        ),
-                        IconButton(
-                          icon: const Icon(Icons.history),
-                          tooltip: '历史记录',
-                          onPressed: () {
-                            Navigator.push(context, MaterialPageRoute<void>(builder: (_) => const HistoryScreen()));
-                          },
-                        ),
-                      ],
+                    Expanded(
+                      child: Text('环跑',
+                          style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.green[800])),
                     ),
-                    const SizedBox(height: 4),
-                    Text(_statusText(), style: TextStyle(color: _statusColor())),
+                    IconButton(
+                      icon: const Icon(Icons.tune),
+                      tooltip: '定位诊断',
+                      onPressed: () {
+                        Navigator.push(context, MaterialPageRoute<void>(builder: (_) => const LocationDiagnosticsScreen()));
+                      },
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.history),
+                      tooltip: '历史记录',
+                      onPressed: () {
+                        Navigator.push(context, MaterialPageRoute<void>(builder: (_) => const HistoryScreen()));
+                      },
+                    ),
                   ],
                 ),
-              ),
+                const SizedBox(height: 4),
+                Text(_statusText(), style: TextStyle(color: _statusColor())),
+              ],
             ),
-          ],
+          ),
         ),
       ),
     );
@@ -205,10 +267,9 @@ class _HomeScreenState extends State<HomeScreen> {
         return _timedOut ? '定位超时（已等待 15 秒）。请检查手机定位开关、权限和网络，点击「重新定位」。' : '正在定位…（请稍候）';
       case LocationStatus.success:
         final String acc = r != null ? '精度 ${r.accuracy.toStringAsFixed(0)}m' : '';
-        final String upd = _loc.lastCallbackAt != null ? '更新 ${_fmt(_loc.lastCallbackAt!)}' : '';
-        return '定位成功：${r?.latitude.toStringAsFixed(6)}, ${r?.longitude.toStringAsFixed(6)} $acc $upd';
+        return '定位成功：${r?.latitude.toStringAsFixed(6)}, ${r?.longitude.toStringAsFixed(6)} $acc';
       case LocationStatus.failed:
-        return '定位失败：${_loc.errorDetail ?? '未知错误'}（点击「重新定位」或查看诊断）';
+        return '定位失败：${_loc.errorDetail ?? '未知错误'}';
       case LocationStatus.timeout:
         return '定位超时：请检查定位开关/权限/网络后点「重新定位」';
     }
@@ -229,36 +290,69 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  static String _fmt(DateTime t) =>
-      '${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}:${t.second.toString().padLeft(2, '0')}';
-
-  Widget _buildBottomBar() {
-    final bool canStart = _loc.status == LocationStatus.success;
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      children: <Widget>[
-        if (!canStart)
-          Padding(
-            padding: const EdgeInsets.only(bottom: 8),
-            child: FilledButton.tonalIcon(
-              onPressed: _retry,
-              icon: const Icon(Icons.refresh),
-              label: const Text('重新定位'),
+  Widget _buildRoutePanel() {
+    final bool located = _loc.status == LocationStatus.success;
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: <Widget>[
+            Row(
+              children: <Widget>[
+                const Text('目标距离', style: TextStyle(fontWeight: FontWeight.bold)),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: TextField(
+                    controller: _targetController,
+                    keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                    decoration: const InputDecoration(
+                      isDense: true,
+                      suffixText: '公里',
+                      hintText: '例如 15',
+                    ),
+                  ),
+                ),
+              ],
             ),
-          ),
-        FilledButton.icon(
-          onPressed: canStart
-              ? () {
-                  Navigator.push(context, MaterialPageRoute<void>(builder: (_) => const RunScreen()));
-                }
-              : null,
-          icon: const Icon(Icons.directions_run),
-          label: Padding(
-            padding: const EdgeInsets.symmetric(vertical: 14),
-            child: Text(canStart ? '开始跑步' : '定位成功后可开始跑步', style: const TextStyle(fontSize: 18)),
-          ),
+            const SizedBox(height: 8),
+            Row(
+              children: <Widget>[
+                for (final int km in _quickKm)
+                  Padding(
+                    padding: const EdgeInsets.only(right: 6),
+                    child: ChoiceChip(
+                      label: Text('$km'),
+                      selected: _targetController.text.trim() == '$km',
+                      onSelected: (_) => setState(() => _targetController.text = '$km'),
+                    ),
+                  ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            if (!located)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: FilledButton.tonalIcon(
+                  onPressed: _retry,
+                  icon: const Icon(Icons.refresh),
+                  label: const Text('重新定位'),
+                ),
+              ),
+            FilledButton.icon(
+              onPressed: (!located || _generating) ? null : _generateRoute,
+              icon: _generating
+                  ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
+                  : const Icon(Icons.route),
+              label: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 12),
+                child: Text(_generating ? '正在生成路线…（约 30-90 秒）' : (located ? '生成闭环路线' : '定位成功后可生成路线')),
+              ),
+            ),
+          ],
         ),
-      ],
+      ),
     );
   }
 }

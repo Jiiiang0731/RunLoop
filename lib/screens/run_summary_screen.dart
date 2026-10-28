@@ -1,14 +1,16 @@
 import 'package:flutter/material.dart';
 
+import '../models/planned_route.dart';
 import '../models/run_record.dart';
 import '../services/storage/database.dart';
 import '../utils/geo.dart';
 
 /// 跑步总结页：展示本次数据，填写 RPE/备注后保存。
 class RunSummaryScreen extends StatefulWidget {
-  const RunSummaryScreen({super.key, required this.record});
+  const RunSummaryScreen({super.key, required this.record, this.plannedRoute});
 
   final RunRecord record;
+  final PlannedRoute? plannedRoute;
 
   @override
   State<RunSummaryScreen> createState() => _RunSummaryScreenState();
@@ -29,6 +31,7 @@ class _RunSummaryScreenState extends State<RunSummaryScreen> {
       distanceMeters: widget.record.distanceMeters,
       avgPaceSecondsPerKm: widget.record.avgPaceSecondsPerKm,
       trackPoints: widget.record.trackPoints,
+      plannedRoute: widget.plannedRoute?.polyline,
       rpe: _rpe,
       note: _noteController.text.trim().isEmpty ? null : _noteController.text.trim(),
     );

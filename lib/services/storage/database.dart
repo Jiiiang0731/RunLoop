@@ -20,7 +20,7 @@ class AppDatabase {
     final String path = p.join(dir, 'runloop.db');
     return openDatabase(
       path,
-      version: 1,
+      version: 2,
       onCreate: (Database db, int version) async {
         await db.execute('''
           CREATE TABLE run_records (
@@ -32,10 +32,16 @@ class AppDatabase {
             distance_m REAL NOT NULL,
             avg_pace REAL NOT NULL,
             track_points TEXT NOT NULL,
+            planned_route TEXT,
             rpe INTEGER,
             note TEXT
           )
         ''');
+      },
+      onUpgrade: (Database db, int oldVersion, int newVersion) async {
+        if (oldVersion < 2) {
+          await db.execute('ALTER TABLE run_records ADD COLUMN planned_route TEXT');
+        }
       },
     );
   }

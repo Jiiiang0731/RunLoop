@@ -18,4 +18,13 @@ class AppConfig {
 
   /// 定位采集间隔（毫秒）。
   static const int locationIntervalMs = 2000;
+
+  /// 路线规划后端地址（可配置为局域网或公网 HTTPS）。
+  ///
+  /// 构建时用 `--dart-define=ROUTE_API_BASE_URL=http://<电脑局域网IP>:8000` 覆盖；
+  /// 后续可切换为公网 HTTPS 地址。
+  static const String routeApiBaseUrl = String.fromEnvironment(
+    'ROUTE_API_BASE_URL',
+    defaultValue: 'http://192.168.1.100:8000',
+  );
 }
