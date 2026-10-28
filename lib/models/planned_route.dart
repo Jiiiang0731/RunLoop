@@ -47,6 +47,36 @@ class RouteStep {
   }
 }
 
+/// 重复路段区间（仅用于视觉偏移，不改真实几何）。
+class OverlapRange {
+  final int start;
+  final int end;
+  final double offset;
+
+  const OverlapRange({required this.start, required this.end, required this.offset});
+
+  factory OverlapRange.fromJson(Map<String, dynamic> json) => OverlapRange(
+        start: (json['start'] as num).toInt(),
+        end: (json['end'] as num).toInt(),
+        offset: (json['offset'] as num?)?.toDouble() ?? 0,
+      );
+}
+
+/// 一组重复路段（同一道路被两次经过）。
+class OverlapGroup {
+  final double refBearing;
+  final List<OverlapRange> ranges;
+
+  const OverlapGroup({required this.refBearing, required this.ranges});
+
+  factory OverlapGroup.fromJson(Map<String, dynamic> json) => OverlapGroup(
+        refBearing: (json['ref_bearing'] as num?)?.toDouble() ?? 0,
+        ranges: ((json['ranges'] as List<dynamic>?) ?? <dynamic>[])
+            .map((dynamic e) => OverlapRange.fromJson(e as Map<String, dynamic>))
+            .toList(),
+      );
+}
+
 /// 单条候选规划路线。
 class PlannedRoute {
   final int seed;
@@ -60,6 +90,7 @@ class PlannedRoute {
   final List<List<double>> polyline; // [[lng, lat], ...]（GCJ-02）
   final List<ScoreItem> scoreComponents;
   final List<RouteStep> steps;
+  final List<OverlapGroup> overlaps;
 
   const PlannedRoute({
     required this.seed,
@@ -73,6 +104,7 @@ class PlannedRoute {
     required this.polyline,
     required this.scoreComponents,
     required this.steps,
+    this.overlaps = const <OverlapGroup>[],
   });
 
   /// 该路线是否可安全进入跑步流程（距离达标 + 闭合达标）。
@@ -125,6 +157,9 @@ class PlannedRoute {
           .toList(),
       steps: rawSteps
           .map((dynamic e) => RouteStep.fromJson(e as Map<String, dynamic>))
+          .toList(),
+      overlaps: ((json['overlaps'] as List<dynamic>?) ?? <dynamic>[])
+          .map((dynamic e) => OverlapGroup.fromJson(e as Map<String, dynamic>))
           .toList(),
     );
   }

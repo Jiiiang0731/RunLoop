@@ -35,6 +35,9 @@ from backend.route_generator import (  # noqa: E402
     GenerateOptions,
     generate_candidates,
 )
+from backend.route_generator.nav_text import build_nav_instructions  # noqa: E402
+from backend.route_generator.overlap import detect_overlaps  # noqa: E402
+from backend.route_generator.sampling import sample_points_by_distance  # noqa: E402
 
 KEY_FILE = os.path.join(ROOT, "config", "amap_key.local")
 
@@ -70,22 +73,25 @@ def _downsample(points, step=2):
 
 
 def _serialize_steps(segments):
-    """把分段 steps 展开为带累计距离的导航指令列表。"""
-    out = []
-    cumulative = 0.0
+    """把分段 steps 转成自然语言导航（含累计里程与转向，不再依赖方位词）。"""
+    all_steps = []
     for seg in segments:
-        for st in seg.steps:
-            cumulative += st.distance_m
-            out.append({
-                "segment": seg.index,
-                "instruction": st.instruction,
-                "road": st.road,
-                "distance_m": round(st.distance_m, 1),
-                "cumulative_m": round(cumulative, 1),
-                "action": st.action,
-                "orientation": st.orientation,
-                "polyline": [[round(p[0], 6), round(p[1], 6)] for p in _downsample(st.polyline, 3)],
-            })
+        all_steps.extend(seg.steps)
+    nav = build_nav_instructions(all_steps)
+    out = []
+    for item in nav:
+        out.append({
+            "instruction": item["text"],
+            "text": item["text"],
+            "road": item["road"],
+            "distance_m": item["distance_m"],
+            "cumulative_m": item["cumulative_m"],
+            "action": item["turn"],
+            "turn": item["turn"],
+            "orientation": "",
+            "junction": item["junction"],
+            "polyline": [],
+        })
     return out
 
 
@@ -106,6 +112,7 @@ def _serialize_candidate(c, target_m, tol_m):
                 "available": comp.available,
                 "detail": comp.detail,
             })
+    poly = _downsample(loop.polyline, 2)
     return {
         "seed": c.seed,
         "ok": True,
@@ -120,7 +127,8 @@ def _serialize_candidate(c, target_m, tol_m):
         "segments_count": len(loop.segments),
         "score": score.total if score else None,
         "score_components": score_components,
-        "polyline": [[round(p[0], 6), round(p[1], 6)] for p in _downsample(loop.polyline, 2)],
+        "polyline": [[round(p[0], 6), round(p[1], 6)] for p in poly],
+        "overlaps": detect_overlaps(poly),
         "steps": _serialize_steps(loop.segments),
     }
 
@@ -201,16 +209,22 @@ def generate():
 
 @app.route("/api/route/pois", methods=["POST"])
 def pois():
-    """查询关键点附近的真实 POI（带 1 小时缓存）。"""
+    """按路线累计里程采样，查询沿途真实 POI（带 1 小时缓存）。
+
+    body: {"polyline": [[lng,lat],...], "interval_m": 1000, "radius": 300, "limit": 3}
+    返回按累计里程排序的地标（覆盖前/中/后段）。
+    """
     try:
         data = request.get_json(force=True, silent=True) or {}
-        points = data.get("points") or []
-        radius = int(data.get("radius", 250))
+        polyline = data.get("polyline") or []
+        interval_m = float(data.get("interval_m", 1000))
+        radius = int(data.get("radius", 500))
         limit = int(data.get("limit", 3))
+        max_points = int(data.get("max_points", 18))
     except (TypeError, ValueError) as e:
         return jsonify({"success": False, "error": f"参数错误：{e}"}), 400
 
-    if not points:
+    if len(polyline) < 2:
         return jsonify({"success": True, "results": []})
 
     try:
@@ -218,19 +232,25 @@ def pois():
     except Exception as e:  # noqa: BLE001
         return jsonify({"success": False, "error": str(e)}), 500
 
+    try:
+        pts = [(float(p[0]), float(p[1])) for p in polyline]
+    except (TypeError, ValueError, IndexError):
+        return jsonify({"success": False, "error": "polyline 格式错误"}), 400
+
+    # 沿路线累计距离采样（每 interval_m 米取一个查询点）
+    samples = [
+        (p[0], p[1], cum)
+        for (p, cum) in sample_points_by_distance(pts, interval_m, max_points)
+    ]
+
     results = []
-    for pt in points[:8]:
-        try:
-            lng = float(pt[0])
-            lat = float(pt[1])
-        except (TypeError, ValueError):
-            continue
+    for lng, lat, cum in samples:
         ck = (round(lng, 5), round(lat, 5), radius)
         now = time.time()
         with _poi_lock:
             hit = _poi_cache.get(ck)
             if hit and hit[0] > now:
-                results.append({"lng": lng, "lat": lat, "pois": hit[1]})
+                results.append({"cumulative_m": cum, "lng": lng, "lat": lat, "pois": hit[1]})
                 continue
         q = urllib.parse.urlencode({
             "location": f"{lng:.6f},{lat:.6f}",
@@ -254,9 +274,9 @@ def pois():
                     })
             with _poi_lock:
                 _poi_cache[ck] = (now + _POI_TTL, pois)
-            results.append({"lng": lng, "lat": lat, "pois": pois})
+            results.append({"cumulative_m": cum, "lng": lng, "lat": lat, "pois": pois})
         except Exception:  # noqa: BLE001
-            results.append({"lng": lng, "lat": lat, "pois": []})
+            results.append({"cumulative_m": cum, "lng": lng, "lat": lat, "pois": []})
     return jsonify({"success": True, "results": results})
 
 

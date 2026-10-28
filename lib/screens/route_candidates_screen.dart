@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:math' as math;
 
 import 'package:amap_flutter_base/amap_flutter_base.dart';
 import 'package:amap_flutter_map/amap_flutter_map.dart';
@@ -11,7 +12,7 @@ import '../services/storage/database.dart';
 import '../utils/map_icons.dart';
 import 'run_screen.dart';
 
-/// 候选路线页：真实折线 + 方向箭头 + 起点标记 + 分段说明 + 拦截不合格路线。
+/// 候选路线页：细线 + 方向箭头 + 去返程视觉分离 + 自然导航面板 + 按里程地标。
 class RouteCandidatesScreen extends StatefulWidget {
   const RouteCandidatesScreen({
     super.key,
@@ -42,6 +43,9 @@ class _RouteCandidatesScreenState extends State<RouteCandidatesScreen> {
     Color(0xFFEF6C00),
     Color(0xFF6A1B9A),
   ];
+  static const double _selectedWidth = 4.0;
+  static const double _unselectedWidth = 2.0;
+  static const double _offsetMeters = 10.0;
 
   late List<PlannedRoute> _routes;
   int _selected = 0;
@@ -61,34 +65,92 @@ class _RouteCandidatesScreenState extends State<RouteCandidatesScreen> {
       final BitmapDescriptor icon = await createArrowIcon(Colors.white);
       if (mounted) setState(() => _arrowIcon = icon);
     } catch (_) {
-      // 图标生成失败时静默跳过箭头，不影响路线绘制。
+      // 图标生成失败时跳过箭头。
     }
   }
-
-  // ---------- 绘制 ----------
 
   List<LatLng> _latLngs(PlannedRoute r) =>
       r.polyline.map((List<double> p) => LatLng(p[1], p[0])).toList();
 
+  // ---------- 路线绘制（含去返程视觉偏移，仅显示层） ----------
+
+  List<Polyline> _selectedSpans(List<LatLng> pts, PlannedRoute r, Color color) {
+    final Map<int, MapEntry<double, double>> offsetAt =
+        <int, MapEntry<double, double>>{};
+    for (final OverlapGroup g in r.overlaps) {
+      for (final OverlapRange rng in g.ranges) {
+        for (int i = rng.start; i < rng.end && i < pts.length; i++) {
+          offsetAt[i] = MapEntry<double, double>(rng.offset, g.refBearing);
+        }
+      }
+    }
+    if (offsetAt.isEmpty) {
+      return <Polyline>[Polyline(points: pts, color: color, width: _selectedWidth)];
+    }
+    final List<Polyline> out = <Polyline>[];
+    int i = 0;
+    while (i < pts.length) {
+      final MapEntry<double, double>? cur = offsetAt[i];
+      int j = i + 1;
+      while (j < pts.length && _sameOffset(offsetAt[j], cur)) {
+        j++;
+      }
+      final List<LatLng> span = pts.sublist(i, j);
+      if (cur == null || cur.key == 0) {
+        out.add(Polyline(points: span, color: color, width: _selectedWidth));
+      } else {
+        out.add(Polyline(
+          points: _offsetSpan(span, cur.key, cur.value),
+          color: color,
+          width: _selectedWidth,
+        ));
+      }
+      i = j;
+    }
+    return out;
+  }
+
+  static bool _sameOffset(MapEntry<double, double>? a, MapEntry<double, double>? b) {
+    if (a == null && b == null) return true;
+    if (a == null || b == null) return false;
+    return a.key == b.key && a.value == b.value;
+  }
+
+  List<LatLng> _offsetSpan(List<LatLng> span, double offset, double refBearing) {
+    final double perp = (refBearing + 90) * math.pi / 180;
+    final double lat0 = span[span.length ~/ 2].latitude;
+    final double dx = math.cos(perp);
+    final double dy = math.sin(perp);
+    final double dLat = dy * _offsetMeters * offset / 111320.0;
+    final double dLng =
+        dx * _offsetMeters * offset / (111320.0 * math.cos(lat0 * math.pi / 180));
+    return <LatLng>[
+      for (final LatLng p in span) LatLng(p.latitude + dLat, p.longitude + dLng),
+    ];
+  }
+
   Set<Polyline> _buildPolylines() {
     final Set<Polyline> result = <Polyline>{};
     for (int i = 0; i < _routes.length; i++) {
+      final PlannedRoute r = _routes[i];
       final Color color = _colors[i % _colors.length];
-      final bool sel = i == _selected;
-      final List<LatLng> pts = _latLngs(_routes[i]);
+      final List<LatLng> pts = _latLngs(r);
       if (pts.isEmpty) continue;
-      result.add(Polyline(
-        points: pts,
-        color: sel ? color : color.withAlpha(70),
-        width: sel ? 6 : 3, // 减细，避免遮挡道路名称
-      ));
+      if (i == _selected) {
+        result.addAll(_selectedSpans(pts, r, color));
+      } else {
+        result.add(Polyline(
+          points: pts,
+          color: color.withAlpha(55),
+          width: _unselectedWidth,
+        ));
+      }
     }
     return result;
   }
 
   Set<Marker> _buildMarkers() {
     final Set<Marker> markers = <Marker>{
-      // 起点（闭合路线终点也在此）
       Marker(
         position: LatLng(widget.originLat, widget.originLng),
         icon: BitmapDescriptor.defaultMarker,
@@ -101,12 +163,15 @@ class _RouteCandidatesScreenState extends State<RouteCandidatesScreen> {
     };
     final BitmapDescriptor? icon = _arrowIcon;
     if (icon != null && _routes.isNotEmpty) {
-      final PlannedRoute r = _routes[_selected];
-      final List<LatLng> pts = _latLngs(r);
-      for (final MapEntry<LatLng, double> e in arrowPointsAlong(pts, count: 5)) {
+      final List<LatLng> pts = _latLngs(_routes[_selected]);
+      final double lengthM = _routeLengthMeters(pts);
+      final int count = arrowCountForLengthMeters(lengthM);
+      final double spacing = count > 0 ? lengthM / (count + 1) : 2500;
+      for (final MapEntry<LatLng, double> e
+          in arrowPointsByDistance(pts, spacingMeters: spacing, maxCount: count)) {
         markers.add(Marker(
           position: e.key,
-          rotation: e.value, // 由真实前进方向计算
+          rotation: e.value,
           icon: icon,
           anchor: const Offset(0.5, 0.5),
           zIndex: 150,
@@ -116,10 +181,20 @@ class _RouteCandidatesScreenState extends State<RouteCandidatesScreen> {
     return markers;
   }
 
+  double _routeLengthMeters(List<LatLng> pts) {
+    double sum = 0;
+    for (int i = 1; i < pts.length; i++) {
+      sum += haversineMeters(pts[i - 1], pts[i]);
+    }
+    return sum;
+  }
+
   void _fitSelectedRoute({bool animated = true}) {
     if (_controller == null || _routes.isEmpty) return;
-    final List<double> lngs = _routes[_selected].polyline.map((p) => p[0]).toList()..sort();
-    final List<double> lats = _routes[_selected].polyline.map((p) => p[1]).toList()..sort();
+    final List<double> lngs =
+        _routes[_selected].polyline.map((p) => p[0]).toList()..sort();
+    final List<double> lats =
+        _routes[_selected].polyline.map((p) => p[1]).toList()..sort();
     if (lngs.isEmpty) return;
     _controller!.moveCamera(
       CameraUpdate.newLatLngBounds(
@@ -174,15 +249,9 @@ class _RouteCandidatesScreenState extends State<RouteCandidatesScreen> {
 
   Future<void> _showLandmarks() async {
     final PlannedRoute r = _routes[_selected];
-    // 取若干步骤起点作为关键位置
-    final List<List<double>> keyPts = <List<double>>[];
-    for (final RouteStep s in r.steps) {
-      if (s.polyline.isNotEmpty) keyPts.add(s.polyline.first);
-      if (keyPts.length >= 5) break;
-    }
-    if (keyPts.isEmpty) {
+    if (r.polyline.length < 2) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('该路线没有可查询的分段点')),
+        const SnackBar(content: Text('该路线折线不足，无法查询地标')),
       );
       return;
     }
@@ -191,34 +260,28 @@ class _RouteCandidatesScreenState extends State<RouteCandidatesScreen> {
       barrierDismissible: true,
       builder: (BuildContext ctx) {
         return AlertDialog(
-          title: const Text('沿途地标（真实查询）'),
+          title: const Text('沿途地标（按里程）'),
           content: SizedBox(
             width: double.maxFinite,
-            child: FutureBuilder<Map<String, List<Map<String, dynamic>>>>(
-              future: RouteApiService().queryPois(points: keyPts, radius: 250),
-              builder: (BuildContext c, AsyncSnapshot<Map<String, List<Map<String, dynamic>>>> snap) {
+            height: 420,
+            child: FutureBuilder<List<Map<String, dynamic>>>(
+              future: _loadPoiRows(r),
+              builder: (BuildContext c, AsyncSnapshot<List<Map<String, dynamic>>> snap) {
                 if (snap.connectionState != ConnectionState.done) {
-                  return const SizedBox(height: 80, child: Center(child: CircularProgressIndicator()));
+                  return const Center(child: CircularProgressIndicator());
                 }
                 if (snap.hasError) {
                   return Text('查询失败：${snap.error}');
                 }
-                final List<Widget> tiles = <Widget>[];
-                snap.data!.forEach((String key, List<Map<String, dynamic>> pois) {
-                  if (pois.isEmpty) return;
-                  tiles.add(Padding(
-                    padding: const EdgeInsets.only(top: 8),
-                    child: Text('($key)', style: const TextStyle(fontSize: 12, color: Colors.grey)),
-                  ));
-                  for (final Map<String, dynamic> p in pois) {
-                    final double d = (p['distance_m'] as num?)?.toDouble() ?? 0;
-                    tiles.add(Text('• ${p['name']}  ${d.toStringAsFixed(0)}m'));
-                  }
-                });
-                if (tiles.isEmpty) {
-                  return const Text('附近未查询到可靠地标，可参考分段道路名。');
+                final List<Map<String, dynamic>> rows = snap.data ?? <Map<String, dynamic>>[];
+                if (rows.isEmpty) {
+                  return const Text('路线太短，暂无沿途地标。');
                 }
-                return SingleChildScrollView(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: tiles));
+                return ListView(
+                  children: <Widget>[
+                    for (final Map<String, dynamic> row in rows) _poiRow(row),
+                  ],
+                );
               },
             ),
           ),
@@ -227,6 +290,35 @@ class _RouteCandidatesScreenState extends State<RouteCandidatesScreen> {
           ],
         );
       },
+    );
+  }
+
+  Future<List<Map<String, dynamic>>> _loadPoiRows(PlannedRoute r) async {
+    final RouteApiService api = RouteApiService();
+    // 传完整折线，由后端按累计里程采样（覆盖前/中/后段）。
+    return api.queryPois(polyline: r.polyline, intervalM: 1000, radius: 500);
+  }
+
+  Widget _poiRow(Map<String, dynamic> row) {
+    final double cum = (row['cumulative_m'] as num?)?.toDouble() ?? 0;
+    final List<Map<String, dynamic>> pois =
+        (row['pois'] as List<dynamic>?)?.cast<Map<String, dynamic>>() ?? <Map<String, dynamic>>[];
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          Text('累计 ${(cum / 1000).toStringAsFixed(1)} km', style: const TextStyle(fontWeight: FontWeight.bold)),
+          if (pois.isEmpty)
+            const Text('附近无可靠地标，参考道路名称', style: TextStyle(fontSize: 12, color: Colors.grey))
+          else
+            for (final Map<String, dynamic> p in pois)
+              Text(
+                '• ${p['name']}  ${(p['distance_m'] as num?)?.toStringAsFixed(0) ?? ''}m',
+                style: const TextStyle(fontSize: 13),
+              ),
+        ],
+      ),
     );
   }
 
@@ -250,7 +342,6 @@ class _RouteCandidatesScreenState extends State<RouteCandidatesScreen> {
       );
       if (ok != true) return;
     }
-    // 本地持久化：选择后、开始跑步前立即保存，断网/重开仍可恢复。
     try {
       await AppDatabase.instance.savePlannedRoute(
         targetM: widget.targetM,
@@ -259,7 +350,6 @@ class _RouteCandidatesScreenState extends State<RouteCandidatesScreen> {
         payload: jsonEncode(r.toJson()),
       );
     } catch (_) {
-      // 保存失败不阻断跑步，但会提示。
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('路线本地保存失败（不影响本次跑步）')),
@@ -350,7 +440,7 @@ class _RouteCandidatesScreenState extends State<RouteCandidatesScreen> {
           ),
         ),
         Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
           child: Row(
             children: <Widget>[
               Text(
@@ -376,9 +466,7 @@ class _RouteCandidatesScreenState extends State<RouteCandidatesScreen> {
               style: TextStyle(color: Colors.red.shade800, fontSize: 13),
             ),
           ),
-        Expanded(
-          child: _stepsList(current),
-        ),
+        Expanded(child: _stepsList(current)),
         Padding(
           padding: const EdgeInsets.all(12),
           child: Row(
@@ -425,29 +513,37 @@ class _RouteCandidatesScreenState extends State<RouteCandidatesScreen> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: <Widget>[
               SizedBox(
-                width: 58,
+                width: 62,
                 child: Text(
                   '${(s.cumulativeM / 1000).toStringAsFixed(2)}km',
                   style: TextStyle(fontSize: 12, color: Colors.grey[600]),
                 ),
               ),
-              Icon(
-                s.action.contains('转') ? Icons.turn_right : Icons.straight,
-                size: 16,
-                color: Colors.blueGrey,
-              ),
+              Icon(_turnIcon(s.action), size: 18, color: Colors.blueGrey),
               const SizedBox(width: 6),
               Expanded(
-                child: Text(
-                  s.instruction.isEmpty ? (s.road.isEmpty ? '直行' : '沿${s.road}步行') : s.instruction,
-                  style: const TextStyle(fontSize: 13),
-                ),
+                child: Text(s.instruction, style: const TextStyle(fontSize: 13)),
               ),
             ],
           ),
         );
       },
     );
+  }
+
+  static IconData _turnIcon(String action) {
+    switch (action) {
+      case 'left':
+        return Icons.turn_left;
+      case 'right':
+        return Icons.turn_right;
+      case 'uturn':
+        return Icons.u_turn_left;
+      case 'end':
+        return Icons.flag;
+      default:
+        return Icons.straight;
+    }
   }
 
   Widget _candidateCard(int index, PlannedRoute r) {

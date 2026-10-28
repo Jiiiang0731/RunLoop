@@ -89,10 +89,11 @@ class RouteApiService {
     );
   }
 
-  /// 查询关键点附近真实 POI（带后端缓存）。
-  Future<Map<String, List<Map<String, dynamic>>>> queryPois({
-    required List<List<double>> points,
-    int radius = 250,
+  /// 按路线累计里程查询沿途真实 POI（后端采样 + 缓存）。
+  Future<List<Map<String, dynamic>>> queryPois({
+    required List<List<double>> polyline,
+    int intervalM = 1000,
+    int radius = 500,
     int limit = 3,
   }) async {
     final Uri uri = Uri.parse('$baseUrl/api/route/pois');
@@ -101,24 +102,18 @@ class RouteApiService {
           uri,
           headers: <String, String>{'Content-Type': 'application/json'},
           body: jsonEncode(<String, dynamic>{
-            'points': points,
+            'polyline': polyline,
+            'interval_m': intervalM,
             'radius': radius,
             'limit': limit,
           }),
         )
-        .timeout(const Duration(seconds: 20));
+        .timeout(const Duration(seconds: 60));
     final Map<String, dynamic> data =
         jsonDecode(resp.body) as Map<String, dynamic>;
-    final Map<String, List<Map<String, dynamic>>> out =
-        <String, List<Map<String, dynamic>>>{};
-    for (final dynamic item in (data['results'] as List<dynamic>?) ?? <dynamic>[]) {
-      final Map<String, dynamic> m = item as Map<String, dynamic>;
-      final String key = '${(m['lng'] as num).toStringAsFixed(5)},${(m['lat'] as num).toStringAsFixed(5)}';
-      out[key] = ((m['pois'] as List<dynamic>?) ?? <dynamic>[])
-          .map((dynamic p) => p as Map<String, dynamic>)
-          .toList();
-    }
-    return out;
+    return ((data['results'] as List<dynamic>?) ?? <dynamic>[])
+        .map((dynamic e) => e as Map<String, dynamic>)
+        .toList();
   }
 
   /// 健康检查（用于连通性测试）。
