@@ -14,14 +14,15 @@ RunLoop 路线规划后端 API（Flask）。
 接口：
     GET  /api/health
     POST /api/route/generate
-        body: { "origin": {"lng": 114.087279, "lat": 30.536395},
-                "target_m": 15000, "tol_m": 500, "seeds": [1,2,3],
-                "points": 10, "detour_factor": 1.7 }
+    POST /api/route/pois
 """
 import json
 import os
 import sys
+import threading
 import time
+import urllib.parse
+import urllib.request
 
 from flask import Flask, jsonify, request
 
@@ -38,13 +39,22 @@ from backend.route_generator import (  # noqa: E402
 KEY_FILE = os.path.join(ROOT, "config", "amap_key.local")
 
 app = Flask(__name__)
+_key_cache = {"key": None}
+
+# POI 缓存：(lng,lat,radius) -> (expire_ts, data)
+_poi_cache: dict = {}
+_poi_lock = threading.Lock()
+_POI_TTL = 3600
 
 
 def load_key() -> str:
+    if _key_cache["key"]:
+        return _key_cache["key"]
     with open(KEY_FILE, "r", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if line and not line.startswith("#"):
+                _key_cache["key"] = line
                 return line
     raise RuntimeError("未找到高德 Web 服务 Key（config/amap_key.local）")
 
@@ -59,48 +69,65 @@ def _downsample(points, step=2):
     return out
 
 
-def _serialize_candidate(c, target_m):
+def _serialize_steps(segments):
+    """把分段 steps 展开为带累计距离的导航指令列表。"""
+    out = []
+    cumulative = 0.0
+    for seg in segments:
+        for st in seg.steps:
+            cumulative += st.distance_m
+            out.append({
+                "segment": seg.index,
+                "instruction": st.instruction,
+                "road": st.road,
+                "distance_m": round(st.distance_m, 1),
+                "cumulative_m": round(cumulative, 1),
+                "action": st.action,
+                "orientation": st.orientation,
+                "polyline": [[round(p[0], 6), round(p[1], 6)] for p in _downsample(st.polyline, 3)],
+            })
+    return out
+
+
+def _serialize_candidate(c, target_m, tol_m):
     if c.loop is None:
-        return {
-            "seed": c.seed,
-            "ok": False,
-            "error": c.error or "无法生成闭环",
-        }
+        return {"seed": c.seed, "ok": False, "error": c.error or "无法生成闭环"}
     loop = c.loop
     score = c.score
+    err = loop.distance_m - target_m
+    within = abs(err) <= tol_m
+    score_components = []
+    if score:
+        for comp in score.components:
+            score_components.append({
+                "name": comp.name,
+                "score": comp.score,
+                "weight": comp.weight,
+                "available": comp.available,
+                "detail": comp.detail,
+            })
     return {
         "seed": c.seed,
         "ok": True,
         "distance_m": round(loop.distance_m, 1),
-        "error_m": round(loop.distance_m - target_m, 1),
+        "error_m": round(err, 1),
+        "within_tolerance": within,
         "closure_m": loop.closure_m,
+        "closure_ok": loop.closure_m < 50,
         "start_snap_m": loop.start_snap_m,
         "duration_s": round(loop.duration_s, 1),
         "n_points": len(loop.polyline),
         "segments_count": len(loop.segments),
         "score": score.total if score else None,
-        "score_components": (
-            [
-                {
-                    "name": comp.name,
-                    "score": comp.score,
-                    "weight": comp.weight,
-                    "available": comp.available,
-                    "detail": comp.detail,
-                }
-                for comp in score.components
-            ]
-            if score
-            else []
-        ),
-        # 折线坐标：[[lng, lat], ...]，坐标系为 GCJ-02（高德）
+        "score_components": score_components,
         "polyline": [[round(p[0], 6), round(p[1], 6)] for p in _downsample(loop.polyline, 2)],
+        "steps": _serialize_steps(loop.segments),
     }
 
 
 @app.route("/api/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "service": "runloop-route-api"})
+    return jsonify({"status": "ok", "service": "runloop-route-api", "version": "0.3"})
 
 
 @app.route("/api/route/generate", methods=["POST"])
@@ -113,10 +140,12 @@ def generate():
         lat = float(origin.get("lat"))
         target_m = int(data.get("target_m", 15000))
         tol_m = int(data.get("tol_m", 500))
-        seeds = data.get("seeds") or [1, 2, 3]
+        seeds = data.get("seeds") or [1]
         seeds = [int(s) for s in seeds][:3]
         points = int(data.get("points", 10))
         detour = float(data.get("detour_factor", 1.7))
+        max_candidates = int(data.get("max_candidates", 1))
+        max_api_calls = int(data.get("max_api_calls", 600))
     except (TypeError, ValueError) as e:
         return jsonify({"success": False, "error": f"参数错误：{e}", "error_code": "BAD_REQUEST"}), 400
 
@@ -136,6 +165,8 @@ def generate():
             max_iters=8,
             detour_factor=detour,
             sleep_s=0.02,
+            max_candidates=max(1, min(3, max_candidates)),
+            max_api_calls=max(50, min(1200, max_api_calls)),
         )
         result = generate_candidates(planner, (lng, lat), options)
     except Exception as e:  # noqa: BLE001
@@ -145,7 +176,7 @@ def generate():
             "error_code": "GENERATE_ERROR",
         }), 500
 
-    candidates = [_serialize_candidate(c, target_m) for c in result.candidates]
+    candidates = [_serialize_candidate(c, target_m, tol_m) for c in result.candidates]
     ok_candidates = [c for c in candidates if c.get("ok")]
     if not ok_candidates:
         return jsonify({
@@ -163,8 +194,70 @@ def generate():
         "seeds": seeds,
         "total_api_calls": result.total_api_calls,
         "elapsed_s": round(time.time() - t0, 1),
+        "stage_times": result.stage_times,
         "candidates": candidates,
     })
+
+
+@app.route("/api/route/pois", methods=["POST"])
+def pois():
+    """查询关键点附近的真实 POI（带 1 小时缓存）。"""
+    try:
+        data = request.get_json(force=True, silent=True) or {}
+        points = data.get("points") or []
+        radius = int(data.get("radius", 250))
+        limit = int(data.get("limit", 3))
+    except (TypeError, ValueError) as e:
+        return jsonify({"success": False, "error": f"参数错误：{e}"}), 400
+
+    if not points:
+        return jsonify({"success": True, "results": []})
+
+    try:
+        key = load_key()
+    except Exception as e:  # noqa: BLE001
+        return jsonify({"success": False, "error": str(e)}), 500
+
+    results = []
+    for pt in points[:8]:
+        try:
+            lng = float(pt[0])
+            lat = float(pt[1])
+        except (TypeError, ValueError):
+            continue
+        ck = (round(lng, 5), round(lat, 5), radius)
+        now = time.time()
+        with _poi_lock:
+            hit = _poi_cache.get(ck)
+            if hit and hit[0] > now:
+                results.append({"lng": lng, "lat": lat, "pois": hit[1]})
+                continue
+        q = urllib.parse.urlencode({
+            "location": f"{lng:.6f},{lat:.6f}",
+            "radius": radius,
+            "key": key,
+            "offset": limit,
+            "page": 1,
+        })
+        url = f"https://restapi.amap.com/v3/place/around?{q}"
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "RunLoop/0.3"})
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                raw = json.loads(resp.read().decode("utf-8"))
+            pois = []
+            if str(raw.get("status")) == "1":
+                for p in (raw.get("pois") or [])[:limit]:
+                    pois.append({
+                        "name": p.get("name") or "",
+                        "type": p.get("type") or "",
+                        "distance_m": float(p.get("distance") or 0),
+                    })
+            with _poi_lock:
+                _poi_cache[ck] = (now + _POI_TTL, pois)
+            results.append({"lng": lng, "lat": lat, "pois": pois})
+        except Exception:  # noqa: BLE001
+            results.append({"lng": lng, "lat": lat, "pois": []})
+    return jsonify({"success": True, "results": results})
 
 
 def main():

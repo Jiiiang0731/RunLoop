@@ -8,7 +8,7 @@ import urllib.request
 from typing import List
 
 from .geo import GeoPoint, haversine
-from .types import PlanResult
+from .types import PlanResult, PlanStep
 
 
 def _to_num(v) -> float:
@@ -19,51 +19,101 @@ def _to_num(v) -> float:
         return 0.0
 
 
+def _parse_polyline(chunks_str: str) -> List[GeoPoint]:
+    pts: List[GeoPoint] = []
+    for chunk in (chunks_str or "").split(";"):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        parts = chunk.split(",")
+        if len(parts) == 2:
+            try:
+                pts.append((float(parts[0]), float(parts[1])))
+            except ValueError:
+                pass
+    return pts
+
+
 def _parse_polyline_from_steps(steps) -> List[GeoPoint]:
     pts: List[GeoPoint] = []
     for s in steps:
-        for chunk in (s.get("polyline") or "").split(";"):
-            chunk = chunk.strip()
-            if not chunk:
-                continue
-            parts = chunk.split(",")
-            if len(parts) == 2:
-                try:
-                    pts.append((float(parts[0]), float(parts[1])))
-                except ValueError:
-                    pass
+        pts.extend(_parse_polyline(s.get("polyline") or ""))
     return pts
+
+
+def _parse_steps(raw_steps) -> List[PlanStep]:
+    """解析高德 steps：保留 instruction/road/distance/action/orientation/polyline。"""
+    out: List[PlanStep] = []
+    for s in raw_steps or []:
+        out.append(PlanStep(
+            instruction=str(s.get("instruction") or ""),
+            road=str(s.get("road") or ""),
+            distance_m=_to_num(s.get("distance")),
+            duration_s=_to_num(s.get("duration")),
+            action=str(s.get("action") or ""),
+            orientation=str(s.get("orientation") or ""),
+            polyline=_parse_polyline(s.get("polyline") or ""),
+        ))
+    return out
 
 
 class MapPlanner:
     """路径规划抽象接口，便于替换地图服务或注入 Mock。"""
+
     def plan_walking(self, origin: GeoPoint, dest: GeoPoint) -> PlanResult:
         raise NotImplementedError
 
+    @property
+    def http_calls(self) -> int:
+        """真实 HTTP 请求次数（不含缓存命中）。"""
+        return 0
+
 
 class AmapWalkingPlanner(MapPlanner):
-    """高德 Web 服务步行路径规划实现。密钥由外部注入，不硬编码。"""
+    """高德 Web 服务步行路径规划实现。密钥由外部注入，不硬编码。
+
+    带分段结果缓存：相同 (origin, destination) 命中缓存不消耗配额。
+    """
 
     def __init__(self, key: str, base: str = "https://restapi.amap.com",
-                 retries: int = 2, sleep: float = 0.2, timeout: int = 30):
+                 retries: int = 2, sleep: float = 0.2, timeout: int = 30,
+                 cache_size: int = 4096):
         self.key = key
         self.base = base
         self.retries = retries
         self.sleep = sleep
         self.timeout = timeout
+        self._cache: dict = {}
+        self._cache_size = cache_size
+        self._http_calls = 0
+
+    @property
+    def http_calls(self) -> int:
+        return self._http_calls
 
     def _http(self, url: str) -> dict:
-        req = urllib.request.Request(url, headers={"User-Agent": "RunLoop/0.2"})
+        req = urllib.request.Request(url, headers={"User-Agent": "RunLoop/0.3"})
         with urllib.request.urlopen(req, timeout=self.timeout) as resp:
             return json.loads(resp.read().decode("utf-8"))
 
+    def wait_budget(self, max_calls: int) -> bool:
+        """是否还有 HTTP 调用预算。"""
+        return self._http_calls < max_calls
+
     def plan_walking(self, origin: GeoPoint, dest: GeoPoint) -> PlanResult:
+        ck = (round(origin[0], 6), round(origin[1], 6),
+              round(dest[0], 6), round(dest[1], 6))
+        if ck in self._cache:
+            return self._cache[ck]
+
         o = f"{origin[0]:.6f},{origin[1]:.6f}"
         d = f"{dest[0]:.6f},{dest[1]:.6f}"
         q = urllib.parse.urlencode({"origin": o, "destination": d, "key": self.key})
         url = f"{self.base}/v3/direction/walking?{q}"
         last = "unknown"
+        result: PlanResult
         for attempt in range(self.retries + 1):
+            self._http_calls += 1
             try:
                 data = self._http(url)
             except Exception as e:  # noqa: BLE001
@@ -74,11 +124,17 @@ class AmapWalkingPlanner(MapPlanner):
                 return PlanResult(error=last)
             if str(data.get("status")) == "1" and data.get("route") and data["route"].get("paths"):
                 p = data["route"]["paths"][0]
-                return PlanResult(
+                raw_steps = p.get("steps", [])
+                result = PlanResult(
                     distance_m=_to_num(p.get("distance")),
                     duration_s=_to_num(p.get("duration")),
-                    points=_parse_polyline_from_steps(p.get("steps", [])),
+                    points=_parse_polyline_from_steps(raw_steps),
+                    steps=_parse_steps(raw_steps),
                 )
+                if len(self._cache) >= self._cache_size:
+                    self._cache.clear()
+                self._cache[ck] = result
+                return result
             last = f"infocode={data.get('infocode')} info={data.get('info')}"
             if attempt < self.retries:
                 time.sleep(self.sleep)
@@ -98,6 +154,10 @@ class MockPlanner(MapPlanner):
         self.n_samples = n_samples
         self.calls = 0
 
+    @property
+    def http_calls(self) -> int:
+        return self.calls
+
     def plan_walking(self, origin: GeoPoint, dest: GeoPoint) -> PlanResult:
         self.calls += 1
         straight = haversine(origin, dest)
@@ -107,4 +167,6 @@ class MockPlanner(MapPlanner):
             pts.append((origin[0] + (dest[0] - origin[0]) * t,
                         origin[1] + (dest[1] - origin[1]) * t))
         distance = straight * self.factor
-        return PlanResult(distance_m=distance, duration_s=distance / 1.25, points=pts)
+        return PlanResult(distance_m=distance, duration_s=distance / 1.25, points=pts,
+                          steps=[PlanStep(instruction="直行", road="测试路",
+                                          distance_m=distance, polyline=pts)])

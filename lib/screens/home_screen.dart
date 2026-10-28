@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:amap_flutter_base/amap_flutter_base.dart';
 import 'package:amap_flutter_map/amap_flutter_map.dart';
@@ -10,6 +11,7 @@ import '../models/location_result.dart';
 import '../models/planned_route.dart';
 import '../services/location/location_service.dart';
 import '../services/route_api/route_api_service.dart';
+import '../services/storage/database.dart';
 import 'history_screen.dart';
 import 'location_diagnostics_screen.dart';
 import 'route_candidates_screen.dart';
@@ -38,11 +40,55 @@ class _HomeScreenState extends State<HomeScreen> {
 
   static const List<int> _quickKm = <int>[5, 10, 15, 20];
 
+  bool _hasSavedRoute = false;
+
   @override
   void initState() {
     super.initState();
     _sub = _loc.stream.listen(_onLocation);
     _initLocation();
+    _checkSavedRoute();
+  }
+
+  Future<void> _checkSavedRoute() async {
+    try {
+      final Map<String, dynamic>? row =
+          await AppDatabase.instance.getLatestPlannedRoute();
+      if (mounted && row != null) setState(() => _hasSavedRoute = true);
+    } catch (_) {
+      // 读取失败静默忽略（不影响主流程）。
+    }
+  }
+
+  Future<void> _restoreLastRoute() async {
+    try {
+      final Map<String, dynamic>? row =
+          await AppDatabase.instance.getLatestPlannedRoute();
+      if (row == null) {
+        setState(() => _hasSavedRoute = false);
+        return;
+      }
+      final PlannedRoute route = PlannedRoute.fromJson(
+        jsonDecode(row['payload'] as String) as Map<String, dynamic>,
+      );
+      if (!mounted) return;
+      Navigator.push(
+        context,
+        MaterialPageRoute<void>(
+          builder: (_) => RouteCandidatesScreen(
+            originLng: route.polyline.isNotEmpty ? route.polyline.first[0] : 0,
+            originLat: route.polyline.isNotEmpty ? route.polyline.first[1] : 0,
+            targetM: (row['target_m'] as num?)?.toDouble() ?? route.distanceM,
+            routes: <PlannedRoute>[route],
+            tolM: 500,
+          ),
+        ),
+      );
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('恢复路线失败：$e')));
+      }
+    }
   }
 
   Future<void> _initLocation() async {
@@ -140,6 +186,7 @@ class _HomeScreenState extends State<HomeScreen> {
     setState(() => _generating = true);
     try {
       final RouteApiService api = RouteApiService();
+      // 优先只生成 1 条候选，成功即展示，避免等待全部候选。
       final RouteGenResult res = await api.generate(
         lng: r.longitude,
         lat: r.latitude,
@@ -147,6 +194,7 @@ class _HomeScreenState extends State<HomeScreen> {
         tolM: 500,
         seeds: <int>[1, 2, 3],
         points: 10,
+        maxCandidates: 1,
       );
       if (!mounted) return;
       setState(() => _generating = false);
@@ -159,6 +207,8 @@ class _HomeScreenState extends State<HomeScreen> {
             targetM: targetKm * 1000,
             routes: res.routes,
             tolM: 500,
+            elapsedS: res.elapsedS,
+            apiCalls: res.apiCalls,
           ),
         ),
       );
@@ -331,6 +381,15 @@ class _HomeScreenState extends State<HomeScreen> {
               ],
             ),
             const SizedBox(height: 8),
+            if (_hasSavedRoute)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: OutlinedButton.icon(
+                  onPressed: _restoreLastRoute,
+                  icon: const Icon(Icons.restore),
+                  label: const Text('恢复上次路线（离线可用）'),
+                ),
+              ),
             if (!located)
               Padding(
                 padding: const EdgeInsets.only(bottom: 8),
@@ -347,7 +406,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   : const Icon(Icons.route),
               label: Padding(
                 padding: const EdgeInsets.symmetric(vertical: 12),
-                child: Text(_generating ? '正在生成路线…（约 30-90 秒）' : (located ? '生成闭环路线' : '定位成功后可生成路线')),
+                child: Text(_generating ? '正在生成路线…（约 30-40 秒）' : (located ? '生成闭环路线' : '定位成功后可生成路线')),
               ),
             ),
           ],

@@ -29,6 +29,8 @@ class RouteApiService {
     double tolM = 500,
     List<int> seeds = const <int>[1, 2, 3],
     int points = 10,
+    int maxCandidates = 1,
+    int maxApiCalls = 600,
   }) async {
     final Uri uri = Uri.parse('$baseUrl/api/route/generate');
     http.Response resp;
@@ -43,6 +45,8 @@ class RouteApiService {
               'tol_m': tolM.round(),
               'seeds': seeds,
               'points': points,
+              'max_candidates': maxCandidates,
+              'max_api_calls': maxApiCalls,
             }),
           )
           .timeout(const Duration(seconds: 180));
@@ -70,11 +74,51 @@ class RouteApiService {
     if (routes.isEmpty) {
       throw RouteApiException('没有可用的候选路线', code: 'EMPTY');
     }
+    final Map<String, dynamic> rawStage =
+        (data['stage_times'] as Map<String, dynamic>?) ?? <String, dynamic>{};
     return RouteGenResult(
       routes: routes,
       elapsedS: (data['elapsed_s'] as num?)?.toDouble() ?? 0,
       apiCalls: (data['total_api_calls'] as num?)?.toInt() ?? 0,
+      stageTimes: rawStage.map(
+        (String k, dynamic v) => MapEntry<String, double>(
+          k,
+          (v as num?)?.toDouble() ?? 0,
+        ),
+      ),
     );
+  }
+
+  /// 查询关键点附近真实 POI（带后端缓存）。
+  Future<Map<String, List<Map<String, dynamic>>>> queryPois({
+    required List<List<double>> points,
+    int radius = 250,
+    int limit = 3,
+  }) async {
+    final Uri uri = Uri.parse('$baseUrl/api/route/pois');
+    final http.Response resp = await http
+        .post(
+          uri,
+          headers: <String, String>{'Content-Type': 'application/json'},
+          body: jsonEncode(<String, dynamic>{
+            'points': points,
+            'radius': radius,
+            'limit': limit,
+          }),
+        )
+        .timeout(const Duration(seconds: 20));
+    final Map<String, dynamic> data =
+        jsonDecode(resp.body) as Map<String, dynamic>;
+    final Map<String, List<Map<String, dynamic>>> out =
+        <String, List<Map<String, dynamic>>>{};
+    for (final dynamic item in (data['results'] as List<dynamic>?) ?? <dynamic>[]) {
+      final Map<String, dynamic> m = item as Map<String, dynamic>;
+      final String key = '${(m['lng'] as num).toStringAsFixed(5)},${(m['lat'] as num).toStringAsFixed(5)}';
+      out[key] = ((m['pois'] as List<dynamic>?) ?? <dynamic>[])
+          .map((dynamic p) => p as Map<String, dynamic>)
+          .toList();
+    }
+    return out;
   }
 
   /// 健康检查（用于连通性测试）。

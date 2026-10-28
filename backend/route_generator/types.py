@@ -8,11 +8,24 @@ from .geo import GeoPoint
 
 
 @dataclass
+class PlanStep:
+    """一步导航指令（来自高德步行规划 steps）。"""
+    instruction: str = ""
+    road: str = ""
+    distance_m: float = 0.0
+    duration_s: float = 0.0
+    action: str = ""
+    orientation: str = ""
+    polyline: List[GeoPoint] = field(default_factory=list)
+
+
+@dataclass
 class PlanResult:
     """一次路径规划结果。error 为 None 表示成功。"""
     distance_m: float = 0.0
     duration_s: float = 0.0
     points: List[GeoPoint] = field(default_factory=list)
+    steps: List[PlanStep] = field(default_factory=list)
     error: Optional[str] = None
 
     @property
@@ -28,6 +41,7 @@ class RouteSegment:
     distance_m: float
     duration_s: float
     n_points: int
+    steps: List[PlanStep] = field(default_factory=list)
 
 
 @dataclass
@@ -80,6 +94,8 @@ class GenerateOptions:
     detour_factor: float = 1.7
     sleep_s: float = 0.02
     jitter: float = 0.15
+    max_candidates: int = 3       # 生成到这么多个成功候选即停
+    max_api_calls: int = 600      # 硬预算，超过即停止
 
 
 @dataclass
@@ -100,3 +116,4 @@ class GenerateResult:
     candidates: List[Candidate]
     total_api_calls: int
     total_elapsed_s: float
+    stage_times: dict = field(default_factory=dict)

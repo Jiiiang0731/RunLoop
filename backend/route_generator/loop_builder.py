@@ -37,7 +37,7 @@ def build_loop(planner: MapPlanner, start: GeoPoint, waypoints: List[GeoPoint],
                 allpts.extend(r.points)
         segments.append(RouteSegment(index=i, origin=seq[i], destination=seq[i + 1],
                                      distance_m=r.distance_m, duration_s=r.duration_s,
-                                     n_points=len(r.points)))
+                                     n_points=len(r.points), steps=r.steps))
         if sleep > 0:
             time.sleep(sleep)
     closure = haversine(allpts[0], allpts[-1]) if len(allpts) >= 2 else 0.0
