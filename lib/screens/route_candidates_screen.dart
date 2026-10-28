@@ -10,9 +10,10 @@ import '../models/planned_route.dart';
 import '../services/route_api/route_api_service.dart';
 import '../services/storage/database.dart';
 import '../utils/map_icons.dart';
+import '../utils/route_path.dart';
 import 'run_screen.dart';
 
-/// 候选路线页：细线 + 方向箭头 + 去返程视觉分离 + 自然导航面板 + 按里程地标。
+/// 候选路线页：路线生长动画 + 移动标记 + 相机跟随 + 完整静态预览 + 自然导航 + 按里程地标。
 class RouteCandidatesScreen extends StatefulWidget {
   const RouteCandidatesScreen({
     super.key,
@@ -37,7 +38,8 @@ class RouteCandidatesScreen extends StatefulWidget {
   State<RouteCandidatesScreen> createState() => _RouteCandidatesScreenState();
 }
 
-class _RouteCandidatesScreenState extends State<RouteCandidatesScreen> {
+class _RouteCandidatesScreenState extends State<RouteCandidatesScreen>
+    with SingleTickerProviderStateMixin {
   static const List<Color> _colors = <Color>[
     Color(0xFF1565C0),
     Color(0xFFEF6C00),
@@ -50,14 +52,39 @@ class _RouteCandidatesScreenState extends State<RouteCandidatesScreen> {
   late List<PlannedRoute> _routes;
   int _selected = 0;
   AMapController? _controller;
+  bool _mapReady = false;
   bool _regenerating = false;
   BitmapDescriptor? _arrowIcon;
+  BitmapDescriptor? _runnerIcon;
+
+  late AnimationController _anim;
+  RoutePath? _path;
+  bool _animDone = false;
+  int _followTick = 0;
 
   @override
   void initState() {
     super.initState();
     _routes = widget.routes;
+    _anim = AnimationController(
+      vsync: this,
+      duration: const Duration(seconds: 12),
+    )..addStatusListener(_onAnimStatus);
     _loadArrowIcon();
+  }
+
+  @override
+  void dispose() {
+    _anim.dispose();
+    _controller = null;
+    super.dispose();
+  }
+
+  void _onAnimStatus(AnimationStatus status) {
+    if (status == AnimationStatus.completed) {
+      setState(() => _animDone = true);
+      _fitSelectedRoute();
+    }
   }
 
   Future<void> _loadArrowIcon() async {
@@ -69,10 +96,99 @@ class _RouteCandidatesScreenState extends State<RouteCandidatesScreen> {
     }
   }
 
+  Future<void> _loadRunnerIcon(Color color) async {
+    try {
+      final BitmapDescriptor icon = await createRunnerIcon(color);
+      if (mounted) setState(() => _runnerIcon = icon);
+    } catch (_) {
+      // 忽略。
+    }
+  }
+
+  // ---------- 动画控制 ----------
+
+  Duration _durationFor(double meters) {
+    final double seconds = (8 + meters / 1500.0).clamp(8.0, 15.0);
+    return Duration(milliseconds: (seconds * 1000).round());
+  }
+
+  /// 开始/重播某条路线的生长动画（会取消上一条未完成的动画）。
+  void _startAnimation(int index) {
+    _anim.stop();
+    _anim.reset();
+    final List<LatLng> pts = _latLngs(_routes[index]);
+    final RoutePath path = RoutePath.fromPoints(pts);
+    setState(() {
+      _selected = index;
+      _path = path;
+      _animDone = false;
+      _followTick = 0;
+    });
+    _loadRunnerIcon(_colors[index % _colors.length]);
+    _anim.duration = _durationFor(path.total);
+    if (_mapReady && _controller != null) {
+      _moveToStart(path);
+      _anim.forward();
+    }
+    // 地图未就绪时，等待 onMapCreated 再启动，避免动画丢失。
+  }
+
+  void _moveToStart(RoutePath path) {
+    if (path.points.isEmpty) return;
+    _controller?.moveCamera(
+      CameraUpdate.newCameraPosition(
+        CameraPosition(target: path.points.first, zoom: 16),
+      ),
+      animated: false,
+    );
+  }
+
+  void _pause() {
+    if (_anim.isAnimating) {
+      _anim.stop();
+      setState(() {});
+    }
+  }
+
+  void _resume() {
+    if (!_animDone && !_anim.isAnimating) {
+      if (_anim.value >= 1.0) {
+        _startAnimation(_selected);
+      } else {
+        _anim.forward();
+        setState(() {});
+      }
+    }
+  }
+
+  void _replay() => _startAnimation(_selected);
+
+  void _skip() {
+    _anim.stop();
+    _anim.value = 1.0;
+    setState(() => _animDone = true);
+    _fitSelectedRoute();
+  }
+
+  /// 相机跟随（节流，避免每帧移动导致抖动）。
+  void _followCamera() {
+    final RoutePath? path = _path;
+    if (path == null || _controller == null || _animDone) return;
+    _followTick++;
+    if (_followTick % 18 != 0) return;
+    final RoutePosition pos = path.at(_anim.value * path.total);
+    _controller!.moveCamera(
+      CameraUpdate.newCameraPosition(
+        CameraPosition(target: pos.point, zoom: 16),
+      ),
+      animated: true,
+    );
+  }
+
+  // ---------- 绘制 ----------
+
   List<LatLng> _latLngs(PlannedRoute r) =>
       r.polyline.map((List<double> p) => LatLng(p[1], p[0])).toList();
-
-  // ---------- 路线绘制（含去返程视觉偏移，仅显示层） ----------
 
   List<Polyline> _selectedSpans(List<LatLng> pts, PlannedRoute r, Color color) {
     final Map<int, MapEntry<double, double>> offsetAt =
@@ -131,19 +247,34 @@ class _RouteCandidatesScreenState extends State<RouteCandidatesScreen> {
 
   Set<Polyline> _buildPolylines() {
     final Set<Polyline> result = <Polyline>{};
+    final RoutePath? path = _path;
     for (int i = 0; i < _routes.length; i++) {
       final PlannedRoute r = _routes[i];
       final Color color = _colors[i % _colors.length];
       final List<LatLng> pts = _latLngs(r);
       if (pts.isEmpty) continue;
-      if (i == _selected) {
-        result.addAll(_selectedSpans(pts, r, color));
-      } else {
+      if (i != _selected) {
         result.add(Polyline(
           points: pts,
-          color: color.withAlpha(55),
+          color: color.withAlpha(45),
           width: _unselectedWidth,
         ));
+        continue;
+      }
+      // 选中路线
+      if (!_animDone && path != null) {
+        // 生长中：只画已生长部分（高亮、更粗）
+        final List<LatLng> drawn = path.upTo(_anim.value * path.total);
+        if (drawn.length >= 2) {
+          result.add(Polyline(
+            points: drawn,
+            color: color,
+            width: _selectedWidth + 1.5,
+          ));
+        }
+      } else {
+        // 完成/跳过：完整静态（含去返程视觉偏移）
+        result.addAll(_selectedSpans(pts, r, color));
       }
     }
     return result;
@@ -161,8 +292,20 @@ class _RouteCandidatesScreenState extends State<RouteCandidatesScreen> {
         zIndex: 200,
       ),
     };
-    final BitmapDescriptor? icon = _arrowIcon;
-    if (icon != null && _routes.isNotEmpty) {
+    final RoutePath? path = _path;
+    // 动画中的移动标记
+    if (!_animDone && path != null && _runnerIcon != null) {
+      final RoutePosition pos = path.at(_anim.value * path.total);
+      markers.add(Marker(
+        position: pos.point,
+        rotation: pos.bearing,
+        icon: _runnerIcon!,
+        anchor: const Offset(0.5, 0.5),
+        zIndex: 300,
+      ));
+    }
+    // 静态完成后的方向箭头
+    if (_animDone && _arrowIcon != null && _routes.isNotEmpty) {
       final List<LatLng> pts = _latLngs(_routes[_selected]);
       final double lengthM = _routeLengthMeters(pts);
       final int count = arrowCountForLengthMeters(lengthM);
@@ -172,7 +315,7 @@ class _RouteCandidatesScreenState extends State<RouteCandidatesScreen> {
         markers.add(Marker(
           position: e.key,
           rotation: e.value,
-          icon: icon,
+          icon: _arrowIcon!,
           anchor: const Offset(0.5, 0.5),
           zIndex: 150,
         ));
@@ -189,7 +332,7 @@ class _RouteCandidatesScreenState extends State<RouteCandidatesScreen> {
     return sum;
   }
 
-  void _fitSelectedRoute({bool animated = true}) {
+  void _fitSelectedRoute() {
     if (_controller == null || _routes.isEmpty) return;
     final List<double> lngs =
         _routes[_selected].polyline.map((p) => p[0]).toList()..sort();
@@ -204,18 +347,20 @@ class _RouteCandidatesScreenState extends State<RouteCandidatesScreen> {
         ),
         60,
       ),
-      animated: animated,
+      animated: true,
     );
   }
 
   void _onMapCreated(AMapController controller) {
     _controller = controller;
-    _fitSelectedRoute(animated: false);
+    _mapReady = true;
+    // 地图就绪后播放当前选中的路线（初始进入即演示路线 1）。
+    _startAnimation(_selected);
   }
 
   void _select(int index) {
-    setState(() => _selected = index);
-    _fitSelectedRoute();
+    // 切换 / 再次点击当前路线：均从头播放。
+    _startAnimation(index);
   }
 
   // ---------- 交互 ----------
@@ -237,14 +382,20 @@ class _RouteCandidatesScreenState extends State<RouteCandidatesScreen> {
       setState(() {
         _routes = res.routes;
         _selected = 0;
+        _animDone = false;
         _regenerating = false;
       });
-      _fitSelectedRoute();
+      _startAnimation(0);
     } catch (e) {
       if (!mounted) return;
       setState(() => _regenerating = false);
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('重新生成失败：$e')));
     }
+  }
+
+  Future<List<Map<String, dynamic>>> _loadPoiRows(PlannedRoute r) async {
+    final RouteApiService api = RouteApiService();
+    return api.queryPois(polyline: r.polyline, intervalM: 1000, radius: 500);
   }
 
   Future<void> _showLandmarks() async {
@@ -293,12 +444,6 @@ class _RouteCandidatesScreenState extends State<RouteCandidatesScreen> {
     );
   }
 
-  Future<List<Map<String, dynamic>>> _loadPoiRows(PlannedRoute r) async {
-    final RouteApiService api = RouteApiService();
-    // 传完整折线，由后端按累计里程采样（覆盖前/中/后段）。
-    return api.queryPois(polyline: r.polyline, intervalM: 1000, radius: 500);
-  }
-
   Widget _poiRow(Map<String, dynamic> row) {
     final double cum = (row['cumulative_m'] as num?)?.toDouble() ?? 0;
     final List<Map<String, dynamic>> pois =
@@ -308,9 +453,11 @@ class _RouteCandidatesScreenState extends State<RouteCandidatesScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: <Widget>[
-          Text('累计 ${(cum / 1000).toStringAsFixed(1)} km', style: const TextStyle(fontWeight: FontWeight.bold)),
+          Text('累计 ${(cum / 1000).toStringAsFixed(1)} km',
+              style: const TextStyle(fontWeight: FontWeight.bold)),
           if (pois.isEmpty)
-            const Text('附近无可靠地标，参考道路名称', style: TextStyle(fontSize: 12, color: Colors.grey))
+            const Text('附近无可靠地标，参考道路名称',
+                style: TextStyle(fontSize: 12, color: Colors.grey))
           else
             for (final Map<String, dynamic> p in pois)
               Text(
@@ -365,6 +512,8 @@ class _RouteCandidatesScreenState extends State<RouteCandidatesScreen> {
     );
   }
 
+  // ---------- 构建 ----------
+
   @override
   Widget build(BuildContext context) {
     final PlannedRoute current = _routes[_selected];
@@ -374,50 +523,97 @@ class _RouteCandidatesScreenState extends State<RouteCandidatesScreen> {
         children: <Widget>[
           Expanded(
             flex: 3,
-            child: Stack(
-              children: <Widget>[
-                AMapWidget(
-                  apiKey: const AMapApiKey(
-                    androidKey: AppConfig.amapAndroidKey,
-                    iosKey: AppConfig.amapIosKey,
-                  ),
-                  privacyStatement: const AMapPrivacyStatement(
-                    hasContains: true,
-                    hasShow: true,
-                    hasAgree: true,
-                  ),
-                  initialCameraPosition: CameraPosition(
-                    target: LatLng(widget.originLat, widget.originLng),
-                    zoom: 14,
-                  ),
-                  polylines: _buildPolylines(),
-                  markers: _buildMarkers(),
-                  onMapCreated: _onMapCreated,
-                ),
-                if (_regenerating)
-                  const Positioned.fill(
-                    child: ColoredBox(
-                      color: Colors.black26,
-                      child: Center(
-                        child: Column(
-                          mainAxisSize: MainAxisSize.min,
-                          children: <Widget>[
-                            CircularProgressIndicator(),
-                            SizedBox(height: 12),
-                            Text('正在重新生成…', style: TextStyle(color: Colors.white)),
-                          ],
+            child: ListenableBuilder(
+              listenable: _anim,
+              builder: (BuildContext context, _) {
+                _followCamera();
+                return Stack(
+                  children: <Widget>[
+                    AMapWidget(
+                      apiKey: const AMapApiKey(
+                        androidKey: AppConfig.amapAndroidKey,
+                        iosKey: AppConfig.amapIosKey,
+                      ),
+                      privacyStatement: const AMapPrivacyStatement(
+                        hasContains: true,
+                        hasShow: true,
+                        hasAgree: true,
+                      ),
+                      initialCameraPosition: CameraPosition(
+                        target: LatLng(widget.originLat, widget.originLng),
+                        zoom: 14,
+                      ),
+                      polylines: _buildPolylines(),
+                      markers: _buildMarkers(),
+                      onMapCreated: _onMapCreated,
+                    ),
+                    _buildAnimControls(),
+                    if (_regenerating)
+                      const Positioned.fill(
+                        child: ColoredBox(
+                          color: Colors.black26,
+                          child: Center(
+                            child: Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: <Widget>[
+                                CircularProgressIndicator(),
+                                SizedBox(height: 12),
+                                Text('正在重新生成…', style: TextStyle(color: Colors.white)),
+                              ],
+                            ),
+                          ),
                         ),
                       ),
-                    ),
-                  ),
-              ],
+                  ],
+                );
+              },
             ),
           ),
-          Expanded(
-            flex: 3,
-            child: _buildPanel(current),
-          ),
+          Expanded(flex: 3, child: _buildPanel(current)),
         ],
+      ),
+    );
+  }
+
+  Widget _buildAnimControls() {
+    return Positioned(
+      left: 12,
+      bottom: 12,
+      child: Container(
+        decoration: BoxDecoration(
+          color: Colors.white.withAlpha(230),
+          borderRadius: BorderRadius.circular(24),
+          boxShadow: const <BoxShadow>[
+            BoxShadow(color: Colors.black12, blurRadius: 6),
+          ],
+        ),
+        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: <Widget>[
+            if (!_animDone) ...<Widget>[
+              IconButton(
+                tooltip: _anim.isAnimating ? '暂停' : '继续',
+                onPressed: _anim.isAnimating ? _pause : _resume,
+                icon: Icon(_anim.isAnimating ? Icons.pause : Icons.play_arrow),
+              ),
+              IconButton(
+                tooltip: '重新播放',
+                onPressed: _replay,
+                icon: const Icon(Icons.replay),
+              ),
+              TextButton(
+                onPressed: _skip,
+                child: const Text('跳过动画'),
+              ),
+            ] else
+              TextButton.icon(
+                onPressed: _replay,
+                icon: const Icon(Icons.replay, size: 18),
+                label: const Text('重新播放'),
+              ),
+          ],
+        ),
       ),
     );
   }
