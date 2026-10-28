@@ -45,8 +45,11 @@ class _RouteCandidatesScreenState extends State<RouteCandidatesScreen>
     Color(0xFFEF6C00),
     Color(0xFF6A1B9A),
   ];
-  static const double _selectedWidth = 4.0;
-  static const double _unselectedWidth = 2.0;
+  // 线宽单位是 dp；原生 ConvertUtil.toFloatPixels = width × density。
+  // 1.2dp ≈ 3.6px（3x 屏），符合「2~3 屏幕像素」的细线要求。
+  static const double _selectedWidth = 1.2;
+  static const double _unselectedWidth = 0.8;
+  static const double _growthWidth = 1.8;
   static const double _offsetMeters = 10.0;
 
   late List<PlannedRoute> _routes;
@@ -61,6 +64,15 @@ class _RouteCandidatesScreenState extends State<RouteCandidatesScreen>
   RoutePath? _path;
   bool _animDone = false;
   int _followTick = 0;
+  /// 把重建节流到 ~30fps，避免每帧全量刷新平台通道导致卡顿。
+  final ValueNotifier<double> _animProgress = ValueNotifier<double>(0);
+  DateTime _lastUiUpdate = DateTime.fromMillisecondsSinceEpoch(0);
+  /// 动画专用 Polyline：固定 id，逐帧只改 points。
+  ///
+  /// 关键：插件按 id 做差异。若每帧新建 Polyline，id（hashCode）会变，
+  /// 插件会每帧「删旧+加新」，真机上极易卡顿/看起来没有动画。
+  /// 复用同一实例的 id（copyWith 会保留 id），插件才会走「修改 → 原地 setPoints」。
+  Polyline? _growthPolyline;
 
   @override
   void initState() {
@@ -69,12 +81,23 @@ class _RouteCandidatesScreenState extends State<RouteCandidatesScreen>
     _anim = AnimationController(
       vsync: this,
       duration: const Duration(seconds: 12),
-    )..addStatusListener(_onAnimStatus);
+    )
+      ..addStatusListener(_onAnimStatus)
+      ..addListener(_onAnimTick);
     _loadArrowIcon();
+  }
+
+  /// 动画每帧回调：把重建节流到 ~30fps 再通知地图。
+  void _onAnimTick() {
+    final DateTime now = DateTime.now();
+    if (now.difference(_lastUiUpdate).inMilliseconds < 33) return;
+    _lastUiUpdate = now;
+    _animProgress.value = _anim.value;
   }
 
   @override
   void dispose() {
+    _animProgress.dispose();
     _anim.dispose();
     _controller = null;
     super.dispose();
@@ -118,6 +141,15 @@ class _RouteCandidatesScreenState extends State<RouteCandidatesScreen>
     _anim.reset();
     final List<LatLng> pts = _latLngs(_routes[index]);
     final RoutePath path = RoutePath.fromPoints(pts);
+    _growthPolyline = pts.isEmpty
+        ? null
+        : Polyline(
+            points: <LatLng>[pts.first],
+            color: _colors[index % _colors.length],
+            width: _growthWidth,
+          );
+    _lastUiUpdate = DateTime.fromMillisecondsSinceEpoch(0);
+    _animProgress.value = 0;
     setState(() {
       _selected = index;
       _path = path;
@@ -166,6 +198,7 @@ class _RouteCandidatesScreenState extends State<RouteCandidatesScreen>
   void _skip() {
     _anim.stop();
     _anim.value = 1.0;
+    _animProgress.value = 1.0;
     setState(() => _animDone = true);
     _fitSelectedRoute();
   }
@@ -175,7 +208,7 @@ class _RouteCandidatesScreenState extends State<RouteCandidatesScreen>
     final RoutePath? path = _path;
     if (path == null || _controller == null || _animDone) return;
     _followTick++;
-    if (_followTick % 18 != 0) return;
+    if (_followTick % 30 != 0) return;
     final RoutePosition pos = path.at(_anim.value * path.total);
     _controller!.moveCamera(
       CameraUpdate.newCameraPosition(
@@ -262,15 +295,13 @@ class _RouteCandidatesScreenState extends State<RouteCandidatesScreen>
         continue;
       }
       // 选中路线
-      if (!_animDone && path != null) {
-        // 生长中：只画已生长部分（高亮、更粗）
+      if (!_animDone && path != null && _growthPolyline != null) {
+        // 生长中：复用同一 id，只改 points（插件原地 setPoints，不重建）
         final List<LatLng> drawn = path.upTo(_anim.value * path.total);
         if (drawn.length >= 2) {
-          result.add(Polyline(
-            points: drawn,
-            color: color,
-            width: _selectedWidth + 1.5,
-          ));
+          result.add(_growthPolyline!.copyWith(pointsParam: drawn));
+        } else {
+          result.add(_growthPolyline!);
         }
       } else {
         // 完成/跳过：完整静态（含去返程视觉偏移）
@@ -523,9 +554,9 @@ class _RouteCandidatesScreenState extends State<RouteCandidatesScreen>
         children: <Widget>[
           Expanded(
             flex: 3,
-            child: ListenableBuilder(
-              listenable: _anim,
-              builder: (BuildContext context, _) {
+            child: ValueListenableBuilder<double>(
+              valueListenable: _animProgress,
+              builder: (BuildContext context, double progress, _) {
                 _followCamera();
                 return Stack(
                   children: <Widget>[
@@ -576,44 +607,72 @@ class _RouteCandidatesScreenState extends State<RouteCandidatesScreen>
   }
 
   Widget _buildAnimControls() {
+    final double total = _path?.total ?? 0;
     return Positioned(
       left: 12,
+      right: 12,
       bottom: 12,
-      child: Container(
-        decoration: BoxDecoration(
-          color: Colors.white.withAlpha(230),
-          borderRadius: BorderRadius.circular(24),
-          boxShadow: const <BoxShadow>[
-            BoxShadow(color: Colors.black12, blurRadius: 6),
-          ],
-        ),
-        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: <Widget>[
-            if (!_animDone) ...<Widget>[
-              IconButton(
-                tooltip: _anim.isAnimating ? '暂停' : '继续',
-                onPressed: _anim.isAnimating ? _pause : _resume,
-                icon: Icon(_anim.isAnimating ? Icons.pause : Icons.play_arrow),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: <Widget>[
+          if (!_animDone)
+            Container(
+              margin: const EdgeInsets.only(bottom: 6),
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              decoration: BoxDecoration(
+                color: Colors.white.withAlpha(230),
+                borderRadius: BorderRadius.circular(8),
               ),
-              IconButton(
-                tooltip: '重新播放',
-                onPressed: _replay,
-                icon: const Icon(Icons.replay),
+              child: Column(
+                children: <Widget>[
+                  LinearProgressIndicator(value: _anim.value, minHeight: 3),
+                  const SizedBox(height: 3),
+                  Text(
+                    '演示 ${(_anim.value * 100).toStringAsFixed(0)}% · 已走 ${((_anim.value * total) / 1000).toStringAsFixed(2)} km',
+                    style: const TextStyle(fontSize: 11),
+                  ),
+                ],
               ),
-              TextButton(
-                onPressed: _skip,
-                child: const Text('跳过动画'),
+            ),
+          Center(
+            child: Container(
+              decoration: BoxDecoration(
+                color: Colors.white.withAlpha(235),
+                borderRadius: BorderRadius.circular(24),
+                boxShadow: const <BoxShadow>[
+                  BoxShadow(color: Colors.black12, blurRadius: 6),
+                ],
               ),
-            ] else
-              TextButton.icon(
-                onPressed: _replay,
-                icon: const Icon(Icons.replay, size: 18),
-                label: const Text('重新播放'),
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: <Widget>[
+                  if (!_animDone) ...<Widget>[
+                    IconButton(
+                      tooltip: _anim.isAnimating ? '暂停' : '继续',
+                      onPressed: _anim.isAnimating ? _pause : _resume,
+                      icon: Icon(_anim.isAnimating ? Icons.pause : Icons.play_arrow),
+                    ),
+                    IconButton(
+                      tooltip: '重新播放',
+                      onPressed: _replay,
+                      icon: const Icon(Icons.replay),
+                    ),
+                    TextButton(
+                      onPressed: _skip,
+                      child: const Text('跳过动画'),
+                    ),
+                  ] else
+                    TextButton.icon(
+                      onPressed: _replay,
+                      icon: const Icon(Icons.replay, size: 18),
+                      label: const Text('重新播放'),
+                    ),
+                ],
               ),
-          ],
-        ),
+            ),
+          ),
+        ],
       ),
     );
   }

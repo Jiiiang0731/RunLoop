@@ -49,4 +49,18 @@ void main() {
     expect(path.at(-50).point.longitude, closeTo(114.000, 1e-6));
     expect(path.at(path.total + 500).point.longitude, closeTo(114.003, 1e-6));
   });
+
+  test('模拟生长动画：进度增加时已绘制折线单调增长', () {
+    int prevLen = 0;
+    for (int i = 0; i <= 20; i++) {
+      final List<LatLng> drawn = path.upTo(path.total * i / 20);
+      expect(drawn.length, greaterThanOrEqualTo(prevLen));
+      prevLen = drawn.length;
+    }
+    expect(prevLen, pts.length);
+  });
+
+  test('动画结束时已绘制折线等于完整路线', () {
+    expect(path.upTo(path.total), equals(pts));
+  });
 }
