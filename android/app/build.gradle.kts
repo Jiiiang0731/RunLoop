@@ -59,6 +59,11 @@ android {
             } else {
                 signingConfigs.getByName("debug")
             }
+            // 高德 SDK 纯 JAR 无 consumer 混淆规则，必须显式保留，否则 R8 剥离导致启动崩溃。
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro"
+            )
         }
     }
 }

@@ -41,6 +41,7 @@ dependencies:
   flutter_foreground_task: ^11.0.3
   amap_flutter_base: ^3.0.0
   path: ^1.9.1
+  shared_preferences: ^2.5.6
 
 dev_dependencies:
   flutter_test:
