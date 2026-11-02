@@ -93,6 +93,8 @@ class PlannedRoute {
   final List<OverlapGroup> overlaps;
   /// 路线质量指标（turns / turn_density / straight_max_m / repetition_ratio ...）。
   final Map<String, dynamic> metrics;
+  /// 后端评分排序后的最优达标候选（阶段 J）。
+  final bool recommended;
 
   const PlannedRoute({
     required this.seed,
@@ -108,6 +110,7 @@ class PlannedRoute {
     required this.steps,
     this.overlaps = const <OverlapGroup>[],
     this.metrics = const <String, dynamic>{},
+    this.recommended = false,
   });
 
   /// 该路线是否可安全进入跑步流程（距离达标 + 闭合达标）。
@@ -123,6 +126,7 @@ class PlannedRoute {
         'score': score,
         'n_points': nPoints,
         'polyline': polyline,
+        'recommended': recommended,
         'score_components': scoreComponents
             .map((ScoreItem s) => <String, dynamic>{
                   'name': s.name,
@@ -165,6 +169,7 @@ class PlannedRoute {
           .map((dynamic e) => OverlapGroup.fromJson(e as Map<String, dynamic>))
           .toList(),
       metrics: (json['metrics'] as Map<String, dynamic>?) ?? <String, dynamic>{},
+      recommended: json['recommended'] as bool? ?? false,
     );
   }
 }

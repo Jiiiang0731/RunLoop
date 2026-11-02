@@ -78,6 +78,11 @@ class PolylineUtil {
             sink.setLineJoinType(PolylineOptions.LineJoinType.valueOf(ConvertUtil.toInt(joinType)));
         }
 
+        final Object zIndex = data.get("zIndex");
+        if (zIndex != null) {
+            sink.setZIndex(ConvertUtil.toFloat(zIndex));
+        }
+
 
         final Object customTexture = data.get("customTexture");
         if (customTexture != null) {

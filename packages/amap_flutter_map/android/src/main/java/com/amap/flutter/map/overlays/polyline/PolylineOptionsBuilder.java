@@ -95,6 +95,11 @@ class PolylineOptionsBuilder implements PolylineOptionsSink {
         polylineOptions.lineJoinType(joinType);
     }
 
+    @Override
+    public void setZIndex(float zIndex) {
+        polylineOptions.zIndex(zIndex);
+    }
+
     public PolylineOptions build(){
         return polylineOptions;
     }

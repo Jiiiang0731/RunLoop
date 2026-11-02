@@ -38,6 +38,10 @@ class _HomeScreenState extends State<HomeScreen> {
       TextEditingController(text: '15');
   bool _generating = false;
 
+  /// 生成进行中：实时计时，给用户进度反馈（阶段 J）。
+  Timer? _genTimer;
+  int _genElapsed = 0;
+
   static const List<int> _quickKm = <int>[5, 10, 15, 20];
 
   bool _hasSavedRoute = false;
@@ -184,6 +188,7 @@ class _HomeScreenState extends State<HomeScreen> {
       return;
     }
     setState(() => _generating = true);
+    _startGenTimer();
     try {
       final RouteApiService api = RouteApiService();
       // 优先只生成 1 条候选，成功即展示，避免等待全部候选。
@@ -193,10 +198,11 @@ class _HomeScreenState extends State<HomeScreen> {
         targetM: targetKm * 1000,
         tolM: 500,
         seeds: <int>[1, 2, 3],
-        points: 10,
+        points: 0, // 0 = 后端按目标距离自适应控制点数（阶段 I/J 调优）
         maxCandidates: 1,
       );
       if (!mounted) return;
+      _stopGenTimer();
       setState(() => _generating = false);
       Navigator.push(
         context,
@@ -214,15 +220,34 @@ class _HomeScreenState extends State<HomeScreen> {
       );
     } catch (e) {
       if (!mounted) return;
+      _stopGenTimer();
       setState(() => _generating = false);
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('生成失败：$e')));
     }
+  }
+
+  void _startGenTimer() {
+    _genTimer?.cancel();
+    _genElapsed = 0;
+    _genTimer = Timer.periodic(const Duration(seconds: 1), (Timer t) {
+      if (!mounted) {
+        t.cancel();
+        return;
+      }
+      setState(() => _genElapsed++);
+    });
+  }
+
+  void _stopGenTimer() {
+    _genTimer?.cancel();
+    _genTimer = null;
   }
 
   @override
   void dispose() {
     _sub?.cancel();
     _timeoutTimer?.cancel();
+    _genTimer?.cancel();
     _loc.stop();
     _targetController.dispose();
     super.dispose();
@@ -406,7 +431,9 @@ class _HomeScreenState extends State<HomeScreen> {
                   : const Icon(Icons.route),
               label: Padding(
                 padding: const EdgeInsets.symmetric(vertical: 12),
-                child: Text(_generating ? '正在生成路线…（约 30-40 秒）' : (located ? '生成闭环路线' : '定位成功后可生成路线')),
+                child: Text(_generating
+                    ? '正在生成路线… $_genElapsed 秒（通常 10-20 秒）'
+                    : (located ? '生成闭环路线' : '定位成功后可生成路线')),
               ),
             ),
           ],

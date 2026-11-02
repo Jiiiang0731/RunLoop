@@ -10,6 +10,18 @@ from typing import List
 from .geo import GeoPoint, haversine
 from .types import PlanResult, PlanStep
 
+# 高德限流/配额类 infocode：命中时用更长退避重试（QPS 超限、日配额、并发超限）。
+_THROTTLE_CODES = {
+    "10003",  # DAILY_QUERY_OVER_LIMIT 日调用量超限
+    "10004",  # ACCESS_TOO_FREQUENT 单位时间访问过于频繁
+    "10019",  # CUQPS_HAS_EXCEEDED_THE_LIMIT
+    "10020",  # CKQPS_HAS_EXCEEDED_THE_LIMIT
+    "10021",  # CIQPS_HAS_EXCEEDED_THE_LIMIT
+    "10022",  # QPS_HAS_EXCEEDED_THE_LIMIT
+    "10023",  # QPS_HAS_EXCEEDED_THE_LIMIT_2
+    "10044",  # 海外请求 QPS 超限
+}
+
 
 def _to_num(v) -> float:
     """高德步行/驾车 API 的 distance/duration 为字符串，需安全转数值。"""
@@ -76,7 +88,7 @@ class AmapWalkingPlanner(MapPlanner):
     """
 
     def __init__(self, key: str, base: str = "https://restapi.amap.com",
-                 retries: int = 2, sleep: float = 0.2, timeout: int = 30,
+                 retries: int = 3, sleep: float = 0.25, timeout: int = 30,
                  cache_size: int = 4096):
         self.key = key
         self.base = base
@@ -114,12 +126,14 @@ class AmapWalkingPlanner(MapPlanner):
         result: PlanResult
         for attempt in range(self.retries + 1):
             self._http_calls += 1
+            # 指数退避：0.25s → 0.5s → 1s（QPS 限流/瞬时故障恢复实测有效）
+            backoff = self.sleep * (2 ** attempt)
             try:
                 data = self._http(url)
             except Exception as e:  # noqa: BLE001
                 last = f"exception:{type(e).__name__}"
                 if attempt < self.retries:
-                    time.sleep(self.sleep)
+                    time.sleep(backoff)
                     continue
                 return PlanResult(error=last)
             if str(data.get("status")) == "1" and data.get("route") and data["route"].get("paths"):
@@ -137,7 +151,9 @@ class AmapWalkingPlanner(MapPlanner):
                 return result
             last = f"infocode={data.get('infocode')} info={data.get('info')}"
             if attempt < self.retries:
-                time.sleep(self.sleep)
+                # 限流类 infocode（QPS/配额）用更长退避，其余按常规退避
+                code = str(data.get("infocode") or "")
+                time.sleep(backoff * (2.0 if code in _THROTTLE_CODES else 1.0))
                 continue
             return PlanResult(error=last)
         return PlanResult(error=last)

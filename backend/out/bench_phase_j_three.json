@@ -1,0 +1,27 @@
+[
+  {
+    "scenario": "C_three_cand_15km",
+    "target": 15000,
+    "seed": "1,2,3",
+    "total_calls": 136,
+    "total_wall_s": 36.02,
+    "n_ok": 3,
+    "ok": true,
+    "rec_seed": 1,
+    "dist": 14874.0,
+    "err": -126.0,
+    "within": true,
+    "closure": 0.56,
+    "score": 69.3,
+    "turns": 17,
+    "density": 1.14,
+    "sharp": 1,
+    "uturn": 0,
+    "short": 0,
+    "straight_max": 3444.3,
+    "ratio300": 0.934,
+    "rep": 0.322,
+    "rec_calls": 21,
+    "rec_wall_s": 7.83
+  }
+]

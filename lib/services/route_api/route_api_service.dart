@@ -28,7 +28,7 @@ class RouteApiService {
     required double targetM,
     double tolM = 500,
     List<int> seeds = const <int>[1, 2, 3],
-    int points = 10,
+    int points = 0, // 0 = 后端按目标距离自适应（阶段 I/J 调优）
     int maxCandidates = 1,
     int maxApiCalls = 600,
   }) async {

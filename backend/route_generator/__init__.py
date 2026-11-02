@@ -19,7 +19,8 @@ from .scorer import (
     turn_density_score, long_straight_score, sharp_short_score,
 )
 from .nav_metrics import analyze_route, detect_turns
-from .generator import generate_candidates, adaptive_n_points
+from .variants import SkeletonVariant, plan_variants
+from .generator import generate_candidates, adaptive_n_points, rank_candidates
 
 __all__ = [
     "GeoPoint", "haversine", "polyline_length", "parse_polyline",
@@ -32,5 +33,6 @@ __all__ = [
     "score_route", "DEFAULT_WEIGHTS",
     "turn_density_score", "long_straight_score", "sharp_short_score",
     "analyze_route", "detect_turns", "adaptive_n_points",
+    "SkeletonVariant", "plan_variants", "rank_candidates",
     "generate_candidates",
 ]

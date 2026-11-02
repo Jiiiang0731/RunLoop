@@ -37,6 +37,7 @@ def serialize(res):
             {
                 "seed": c.seed,
                 "error": c.error,
+                "recommended": c.recommended,
                 **({} if c.loop is None else {
                     "distance": round(c.loop.distance_m, 1),
                     "error_m": round(c.loop.distance_m - res.target_m, 1),
@@ -65,7 +66,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--target", type=int, default=15000)
     ap.add_argument("--start", type=str, default="121.552563,31.215725")
-    ap.add_argument("--points", type=int, default=10)
+    ap.add_argument("--points", type=int, default=0)  # 0 = 按目标距离自适应
     ap.add_argument("--seeds", type=str, default="1,2,3")
     ap.add_argument("--max-iters", type=int, default=8)
     ap.add_argument("--tol", type=int, default=500)
@@ -86,8 +87,12 @@ def main():
 
     for c in res.candidates:
         if c.loop is not None and c.loop.ok and c.score is not None:
+            turns = (c.metrics or {}).get("turns", "?")
+            density = (c.metrics or {}).get("turn_density", "?")
+            star = " ★推荐" if c.recommended else ""
             print(f"seed={c.seed}  dist={c.loop.distance_m:.0f}m  err={c.loop.distance_m - args.target:+.0f}m  "
-                  f"close={c.loop.closure_m}m  score={c.score.total}  calls={c.api_calls}  {c.elapsed_s}s")
+                  f"close={c.loop.closure_m}m  score={c.score.total}  turns={turns}({density}/km)  "
+                  f"calls={c.api_calls}  {c.elapsed_s}s{star}")
         else:
             print(f"seed={c.seed}  FAILED  {c.error}  calls={c.api_calls}")
     print(f"TOTAL calls={res.total_api_calls} elapsed={res.total_elapsed_s}s -> {args.out}")

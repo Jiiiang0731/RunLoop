@@ -62,6 +62,9 @@ class Polyline extends BaseOverlay {
     this.customTexture,
     this.onTap,
     this.color = const Color(0xCCC4E0F0),
+    this.gradient = false,
+    this.colorList,
+    this.zIndex,
   })  : assert(points.length > 0),
         this.width = (width <= 0 ? 10 : width),
         this.alpha =(alpha < 0 ? 0 : (alpha > 1 ? 1 : alpha)),
@@ -97,6 +100,15 @@ class Polyline extends BaseOverlay {
   /// 线头类型
   final CapType capType;
 
+  /// 是否使用渐变（需配合 [colorList]，本地补丁新增，原生已支持）
+  final bool gradient;
+
+  /// 渐变色列表（首→尾插值；gradient=true 时生效，本地补丁新增）
+  final List<Color>? colorList;
+
+  /// 叠加顺序（值越大越靠上，本地补丁新增；null 时不传给原生）
+  final double? zIndex;
+
   /// 点击回调（回调参数为id)
   final ArgumentCallback<String>? onTap;
 
@@ -104,7 +116,7 @@ class Polyline extends BaseOverlay {
   Polyline copyWith({
     List<LatLng>? pointsParam,
     double? widthParam,
-    int? zIndexParam,
+    double? zIndexParam,
     bool? visibleParam,
     double? alphaParam,
     DashLineType? dashLineTypeParam,
@@ -113,6 +125,8 @@ class Polyline extends BaseOverlay {
     BitmapDescriptor? customTextureParam,
     ArgumentCallback<String>? onTapParam,
     Color? colorParam,
+    bool? gradientParam,
+    List<Color>? colorListParam,
   }) {
     Polyline copyPolyline = Polyline(
       points: pointsParam ?? points,
@@ -126,6 +140,9 @@ class Polyline extends BaseOverlay {
       customTexture: customTextureParam ?? customTexture,
       onTap: onTapParam ?? onTap,
       color: colorParam ?? color,
+      gradient: gradientParam ?? gradient,
+      colorList: colorListParam ?? colorList,
+      zIndex: zIndexParam ?? zIndex,
     );
     copyPolyline.setIdForCopy(id);
     return copyPolyline;
@@ -155,6 +172,10 @@ class Polyline extends BaseOverlay {
     addIfPresent('joinType', joinType.index);
     addIfPresent('customTexture', customTexture?.toMap());
     addIfPresent('color', color.value);
+    addIfPresent('gradient', gradient);
+    addIfPresent(
+        'colorList', colorList?.map((Color c) => c.value).toList());
+    addIfPresent('zIndex', zIndex);
     return json;
   }
 
@@ -173,6 +194,9 @@ class Polyline extends BaseOverlay {
         dashLineType == typedOther.dashLineType &&
         capType == typedOther.capType &&
         joinType == typedOther.joinType &&
+        gradient == typedOther.gradient &&
+        listEquals(colorList, typedOther.colorList) &&
+        zIndex == typedOther.zIndex &&
         color == typedOther.color;
   }
 

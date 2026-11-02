@@ -11,9 +11,14 @@ import '../services/route_api/route_api_service.dart';
 import '../services/storage/database.dart';
 import '../utils/map_icons.dart';
 import '../utils/route_path.dart';
+import '../utils/route_style.dart';
 import 'run_screen.dart';
 
 /// 候选路线页：路线生长动画 + 移动标记 + 相机跟随 + 完整静态预览 + 自然导航 + 按里程地标。
+///
+/// 阶段 J 视觉升级：选中路线 = 白描边 + 渐变主线 + 圆角端点（专业地图式包边），
+/// 未选中路线半透明细线；静态覆盖物缓存 + 生长线/跑者固定 id 逐帧原地更新，
+/// 避免每帧「删旧+加新」造成卡顿（阶段 H 教训）。
 class RouteCandidatesScreen extends StatefulWidget {
   const RouteCandidatesScreen({
     super.key,
@@ -40,16 +45,6 @@ class RouteCandidatesScreen extends StatefulWidget {
 
 class _RouteCandidatesScreenState extends State<RouteCandidatesScreen>
     with SingleTickerProviderStateMixin {
-  static const List<Color> _colors = <Color>[
-    Color(0xFF1565C0),
-    Color(0xFFEF6C00),
-    Color(0xFF6A1B9A),
-  ];
-  // 线宽单位是 dp；原生 ConvertUtil.toFloatPixels = width × density。
-  // 1.2dp ≈ 3.6px（3x 屏），符合「2~3 屏幕像素」的细线要求。
-  static const double _selectedWidth = 1.2;
-  static const double _unselectedWidth = 0.8;
-  static const double _growthWidth = 1.8;
   static const double _offsetMeters = 10.0;
 
   late List<PlannedRoute> _routes;
@@ -59,6 +54,7 @@ class _RouteCandidatesScreenState extends State<RouteCandidatesScreen>
   bool _regenerating = false;
   BitmapDescriptor? _arrowIcon;
   BitmapDescriptor? _runnerIcon;
+  BitmapDescriptor? _startIcon;
 
   late AnimationController _anim;
   RoutePath? _path;
@@ -67,12 +63,30 @@ class _RouteCandidatesScreenState extends State<RouteCandidatesScreen>
   /// 把重建节流到 ~30fps，避免每帧全量刷新平台通道导致卡顿。
   final ValueNotifier<double> _animProgress = ValueNotifier<double>(0);
   DateTime _lastUiUpdate = DateTime.fromMillisecondsSinceEpoch(0);
-  /// 动画专用 Polyline：固定 id，逐帧只改 points。
+
+  /// 动画专用 Polyline（渐变主线 + 白描边）：固定 id，逐帧只改 points。
   ///
   /// 关键：插件按 id 做差异。若每帧新建 Polyline，id（hashCode）会变，
   /// 插件会每帧「删旧+加新」，真机上极易卡顿/看起来没有动画。
   /// 复用同一实例的 id（copyWith 会保留 id），插件才会走「修改 → 原地 setPoints」。
-  Polyline? _growthPolyline;
+  Polyline? _growthCore;
+  Polyline? _growthCasing;
+
+  /// 跑者标记：固定 id，逐帧只改 position/rotation（原地移动不重建）。
+  Marker? _runnerMarker;
+
+  /// 「换一批」轮次：每轮使用一组新种子，避免重复路线。
+  int _regenRound = 0;
+
+  /// 静态覆盖物缓存（未选中路线 / 完成后的选中路线 / 起点标记 / 方向箭头）。
+  /// 仅在路线、选中项、动画状态、图标变化时重建；动画期间逐帧复用（id 稳定）。
+  Set<Polyline>? _staticPolylinesCache;
+  Set<Marker>? _staticMarkersCache;
+
+  void _invalidateOverlayCache() {
+    _staticPolylinesCache = null;
+    _staticMarkersCache = null;
+  }
 
   @override
   void initState() {
@@ -84,7 +98,7 @@ class _RouteCandidatesScreenState extends State<RouteCandidatesScreen>
     )
       ..addStatusListener(_onAnimStatus)
       ..addListener(_onAnimTick);
-    _loadArrowIcon();
+    _loadIcons();
   }
 
   /// 动画每帧回调：把重建节流到 ~30fps 再通知地图。
@@ -105,26 +119,28 @@ class _RouteCandidatesScreenState extends State<RouteCandidatesScreen>
 
   void _onAnimStatus(AnimationStatus status) {
     if (status == AnimationStatus.completed) {
-      setState(() => _animDone = true);
+      setState(() {
+        _animDone = true;
+        _invalidateOverlayCache(); // 完成后改画静态渐变线 + 箭头
+      });
       _fitSelectedRoute();
     }
   }
 
-  Future<void> _loadArrowIcon() async {
+  Future<void> _loadIcons() async {
     try {
-      final BitmapDescriptor icon = await createArrowIcon(Colors.white);
-      if (mounted) setState(() => _arrowIcon = icon);
+      final BitmapDescriptor arrow =
+          await createArrowIcon(RouteStyle.primary(_selected));
+      final BitmapDescriptor start = await createStartIcon();
+      if (mounted) {
+        setState(() {
+          _arrowIcon = arrow;
+          _startIcon = start;
+          _invalidateOverlayCache();
+        });
+      }
     } catch (_) {
-      // 图标生成失败时跳过箭头。
-    }
-  }
-
-  Future<void> _loadRunnerIcon(Color color) async {
-    try {
-      final BitmapDescriptor icon = await createRunnerIcon(color);
-      if (mounted) setState(() => _runnerIcon = icon);
-    } catch (_) {
-      // 忽略。
+      // 图标生成失败时跳过装饰。
     }
   }
 
@@ -141,13 +157,38 @@ class _RouteCandidatesScreenState extends State<RouteCandidatesScreen>
     _anim.reset();
     final List<LatLng> pts = _latLngs(_routes[index]);
     final RoutePath path = RoutePath.fromPoints(pts);
-    _growthPolyline = pts.isEmpty
-        ? null
-        : Polyline(
-            points: <LatLng>[pts.first],
-            color: _colors[index % _colors.length],
-            width: _growthWidth,
-          );
+    final List<Color> grad = RouteStyle.gradient(index);
+    if (pts.isEmpty) {
+      _growthCore = null;
+      _growthCasing = null;
+      _runnerMarker = null;
+    } else {
+      // 白描边（底层）+ 渐变主线（上层），都用固定 id 逐帧原地更新 points。
+      _growthCasing = Polyline(
+        points: <LatLng>[pts.first],
+        color: RouteStyle.casingColor,
+        width: RouteStyle.growthCasingWidth,
+        capType: CapType.round,
+        joinType: JoinType.round,
+        zIndex: RouteStyle.zCasing,
+      );
+      _growthCore = Polyline(
+        points: <LatLng>[pts.first],
+        gradient: true,
+        colorList: grad,
+        color: grad.first,
+        width: RouteStyle.growthCoreWidth,
+        capType: CapType.round,
+        joinType: JoinType.round,
+        zIndex: RouteStyle.zCore,
+      );
+      _runnerMarker = Marker(
+        position: pts.first,
+        icon: _runnerIcon ?? BitmapDescriptor.defaultMarker,
+        anchor: const Offset(0.5, 0.5),
+        zIndex: 300,
+      );
+    }
     _lastUiUpdate = DateTime.fromMillisecondsSinceEpoch(0);
     _animProgress.value = 0;
     setState(() {
@@ -155,14 +196,35 @@ class _RouteCandidatesScreenState extends State<RouteCandidatesScreen>
       _path = path;
       _animDone = false;
       _followTick = 0;
+      _invalidateOverlayCache();
     });
-    _loadRunnerIcon(_colors[index % _colors.length]);
+    _loadRouteIcons(index);
     _anim.duration = _durationFor(path.total);
     if (_mapReady && _controller != null) {
       _moveToStart(path);
       _anim.forward();
     }
     // 地图未就绪时，等待 onMapCreated 再启动，避免动画丢失。
+  }
+
+  /// 按当前选中路线主色刷新跑者/箭头图标。
+  Future<void> _loadRouteIcons(int index) async {
+    final Color c = RouteStyle.primary(index);
+    try {
+      final BitmapDescriptor runner = await createRunnerIcon(c);
+      final BitmapDescriptor arrow = await createArrowIcon(c);
+      if (!mounted) return;
+      setState(() {
+        _runnerIcon = runner;
+        _arrowIcon = arrow;
+        if (_runnerMarker != null) {
+          _runnerMarker = _runnerMarker!.copyWith(iconParam: runner);
+        }
+        _invalidateOverlayCache();
+      });
+    } catch (_) {
+      // 忽略图标刷新失败。
+    }
   }
 
   void _moveToStart(RoutePath path) {
@@ -199,7 +261,10 @@ class _RouteCandidatesScreenState extends State<RouteCandidatesScreen>
     _anim.stop();
     _anim.value = 1.0;
     _animProgress.value = 1.0;
-    setState(() => _animDone = true);
+    setState(() {
+      _animDone = true;
+      _invalidateOverlayCache();
+    });
     _fitSelectedRoute();
   }
 
@@ -223,7 +288,9 @@ class _RouteCandidatesScreenState extends State<RouteCandidatesScreen>
   List<LatLng> _latLngs(PlannedRoute r) =>
       r.polyline.map((List<double> p) => LatLng(p[1], p[0])).toList();
 
-  List<Polyline> _selectedSpans(List<LatLng> pts, PlannedRoute r, Color color) {
+  /// 选中路线的静态绘制：每段 = 白描边（下）+ 渐变主线（上），圆角端点。
+  /// 去/返程重叠段保留 ±10m 视觉偏移（阶段 G 逻辑不变）。
+  List<Polyline> _selectedSpans(List<LatLng> pts, PlannedRoute r, int colorIndex) {
     final Map<int, MapEntry<double, double>> offsetAt =
         <int, MapEntry<double, double>>{};
     for (final OverlapGroup g in r.overlaps) {
@@ -233,10 +300,36 @@ class _RouteCandidatesScreenState extends State<RouteCandidatesScreen>
         }
       }
     }
-    if (offsetAt.isEmpty) {
-      return <Polyline>[Polyline(points: pts, color: color, width: _selectedWidth)];
-    }
     final List<Polyline> out = <Polyline>[];
+    int spanNo = 0;
+    void emitSpan(List<LatLng> span) {
+      if (span.length < 2) return;
+      // 描边与主线各自连续成一条 Polyline（相邻 span 首尾点重叠 1 个，接缝圆润）
+      out.add(Polyline(
+        points: span,
+        color: RouteStyle.casingColor,
+        width: RouteStyle.casingWidth,
+        capType: CapType.round,
+        joinType: JoinType.round,
+        zIndex: RouteStyle.zCasing,
+      )..setIdForCopy('sel-casing-$colorIndex-$spanNo'));
+      out.add(Polyline(
+        points: span,
+        gradient: true,
+        colorList: RouteStyle.gradient(colorIndex),
+        color: RouteStyle.primary(colorIndex),
+        width: RouteStyle.coreWidth,
+        capType: CapType.round,
+        joinType: JoinType.round,
+        zIndex: RouteStyle.zCore,
+      )..setIdForCopy('sel-core-$colorIndex-$spanNo'));
+      spanNo++;
+    }
+
+    if (offsetAt.isEmpty) {
+      emitSpan(pts);
+      return out;
+    }
     int i = 0;
     while (i < pts.length) {
       final MapEntry<double, double>? cur = offsetAt[i];
@@ -246,13 +339,9 @@ class _RouteCandidatesScreenState extends State<RouteCandidatesScreen>
       }
       final List<LatLng> span = pts.sublist(i, j);
       if (cur == null || cur.key == 0) {
-        out.add(Polyline(points: span, color: color, width: _selectedWidth));
+        emitSpan(span);
       } else {
-        out.add(Polyline(
-          points: _offsetSpan(span, cur.key, cur.value),
-          color: color,
-          width: _selectedWidth,
-        ));
+        emitSpan(_offsetSpan(span, cur.key, cur.value));
       }
       i = j;
     }
@@ -279,80 +368,92 @@ class _RouteCandidatesScreenState extends State<RouteCandidatesScreen>
   }
 
   Set<Polyline> _buildPolylines() {
-    final Set<Polyline> result = <Polyline>{};
-    final RoutePath? path = _path;
-    for (int i = 0; i < _routes.length; i++) {
-      final PlannedRoute r = _routes[i];
-      final Color color = _colors[i % _colors.length];
-      final List<LatLng> pts = _latLngs(r);
-      if (pts.isEmpty) continue;
-      if (i != _selected) {
-        result.add(Polyline(
-          points: pts,
-          color: color.withAlpha(45),
-          width: _unselectedWidth,
-        ));
-        continue;
-      }
-      // 选中路线
-      if (!_animDone && path != null && _growthPolyline != null) {
-        // 生长中：复用同一 id，只改 points（插件原地 setPoints，不重建）
-        final List<LatLng> drawn = path.upTo(_anim.value * path.total);
-        if (drawn.length >= 2) {
-          result.add(_growthPolyline!.copyWith(pointsParam: drawn));
-        } else {
-          result.add(_growthPolyline!);
+    // 静态部分带缓存：动画期间逐帧复用（id 稳定 → 插件不做删旧加新）
+    if (_staticPolylinesCache == null) {
+      final Set<Polyline> statics = <Polyline>{};
+      for (int i = 0; i < _routes.length; i++) {
+        final PlannedRoute r = _routes[i];
+        final List<LatLng> pts = _latLngs(r);
+        if (pts.isEmpty) continue;
+        if (i == _selected) {
+          // 动画中由生长线负责；完成后画完整静态（含去返程视觉偏移）
+          if (_animDone) statics.addAll(_selectedSpans(pts, r, i));
+          continue;
         }
+        statics.add(Polyline(
+          points: pts,
+          color: RouteStyle.unselectedColor(i),
+          width: RouteStyle.unselectedWidth,
+          capType: CapType.round,
+          joinType: JoinType.round,
+          zIndex: RouteStyle.zUnselected,
+        )..setIdForCopy('unsel-$i'));
+      }
+      _staticPolylinesCache = statics;
+    }
+    final Set<Polyline> result = Set<Polyline>.of(_staticPolylinesCache!);
+    final RoutePath? path = _path;
+    if (!_animDone && path != null && _growthCore != null && _growthCasing != null) {
+      // 生长中：复用同一 id，只改 points（插件原地 setPoints，不重建）
+      final List<LatLng> drawn = path.upTo(_anim.value * path.total);
+      if (drawn.length >= 2) {
+        result.add(_growthCasing!.copyWith(pointsParam: drawn));
+        result.add(_growthCore!.copyWith(pointsParam: drawn));
       } else {
-        // 完成/跳过：完整静态（含去返程视觉偏移）
-        result.addAll(_selectedSpans(pts, r, color));
+        result.add(_growthCasing!);
+        result.add(_growthCore!);
       }
     }
     return result;
   }
 
   Set<Marker> _buildMarkers() {
-    final Set<Marker> markers = <Marker>{
-      Marker(
-        position: LatLng(widget.originLat, widget.originLng),
-        icon: BitmapDescriptor.defaultMarker,
-        infoWindow: const InfoWindow(
-          title: '起点 / 终点',
-          snippet: '闭合路线，最终回到此处',
-        ),
-        zIndex: 200,
-      ),
-    };
+    if (_staticMarkersCache == null) {
+      final Set<Marker> statics = <Marker>{
+        Marker(
+          position: LatLng(widget.originLat, widget.originLng),
+          icon: _startIcon ?? BitmapDescriptor.defaultMarker,
+          anchor: const Offset(0.5, 0.5),
+          infoWindow: const InfoWindow(
+            title: '起点 / 终点',
+            snippet: '闭合路线，最终回到此处',
+          ),
+          zIndex: 200,
+        )..setIdForCopy('start-marker'),
+      };
+      // 静态完成后的方向箭头（主色 + 白描边）
+      if (_animDone && _arrowIcon != null && _routes.isNotEmpty) {
+        final List<LatLng> pts = _latLngs(_routes[_selected]);
+        final double lengthM = _routeLengthMeters(pts);
+        final int count = arrowCountForLengthMeters(lengthM);
+        final double spacing = count > 0 ? lengthM / (count + 1) : 2500;
+        int ai = 0;
+        for (final MapEntry<LatLng, double> e in arrowPointsByDistance(
+            pts, spacingMeters: spacing, maxCount: count)) {
+          statics.add(Marker(
+            position: e.key,
+            rotation: e.value,
+            icon: _arrowIcon!,
+            anchor: const Offset(0.5, 0.5),
+            zIndex: 150,
+          )..setIdForCopy('arrow-$ai'));
+          ai++;
+        }
+      }
+      _staticMarkersCache = statics;
+    }
+    final Set<Marker> result = Set<Marker>.of(_staticMarkersCache!);
+    // 动画中的跑者标记：固定 id，逐帧只改 position/rotation
     final RoutePath? path = _path;
-    // 动画中的移动标记
-    if (!_animDone && path != null && _runnerIcon != null) {
+    if (!_animDone && path != null && _runnerMarker != null) {
       final RoutePosition pos = path.at(_anim.value * path.total);
-      markers.add(Marker(
-        position: pos.point,
-        rotation: pos.bearing,
-        icon: _runnerIcon!,
-        anchor: const Offset(0.5, 0.5),
-        zIndex: 300,
+      result.add(_runnerMarker!.copyWith(
+        positionParam: pos.point,
+        rotationParam: pos.bearing,
+        iconParam: _runnerIcon,
       ));
     }
-    // 静态完成后的方向箭头
-    if (_animDone && _arrowIcon != null && _routes.isNotEmpty) {
-      final List<LatLng> pts = _latLngs(_routes[_selected]);
-      final double lengthM = _routeLengthMeters(pts);
-      final int count = arrowCountForLengthMeters(lengthM);
-      final double spacing = count > 0 ? lengthM / (count + 1) : 2500;
-      for (final MapEntry<LatLng, double> e
-          in arrowPointsByDistance(pts, spacingMeters: spacing, maxCount: count)) {
-        markers.add(Marker(
-          position: e.key,
-          rotation: e.value,
-          icon: _arrowIcon!,
-          anchor: const Offset(0.5, 0.5),
-          zIndex: 150,
-        ));
-      }
-    }
-    return markers;
+    return result;
   }
 
   double _routeLengthMeters(List<LatLng> pts) {
@@ -400,21 +501,39 @@ class _RouteCandidatesScreenState extends State<RouteCandidatesScreen>
     setState(() => _regenerating = true);
     try {
       final RouteApiService api = RouteApiService();
+      // 每轮换新种子，保证「换一批」真的给出不同路线
+      final int base = 7 + _regenRound * 3;
+      _regenRound++;
       final RouteGenResult res = await api.generate(
         lng: widget.originLng,
         lat: widget.originLat,
         targetM: widget.targetM,
         tolM: widget.tolM,
-        seeds: <int>[7, 8, 9],
-        points: 10,
+        seeds: <int>[base, base + 1, base + 2],
+        points: 0, // 0 = 后端按目标距离自适应控制点数（阶段 I/J 调优成果）
         maxCandidates: 2,
       );
       if (!mounted) return;
       setState(() {
-        _routes = res.routes;
+        // 与现有路线合并后按「达标优先 + 评分降序」重排，保留最多 3 条
+        final Map<int, PlannedRoute> bySeed = <int, PlannedRoute>{
+          for (final PlannedRoute r in _routes) r.seed: r,
+        };
+        for (final PlannedRoute r in res.routes) {
+          bySeed[r.seed] = r;
+        }
+        final List<PlannedRoute> merged = bySeed.values.toList()
+          ..sort((PlannedRoute a, PlannedRoute b) {
+            final int aw = a.withinTolerance ? 0 : 1;
+            final int bw = b.withinTolerance ? 0 : 1;
+            if (aw != bw) return aw - bw;
+            return (b.score ?? -1).compareTo(a.score ?? -1);
+          });
+        _routes = merged.take(3).toList();
         _selected = 0;
         _animDone = false;
         _regenerating = false;
+        _invalidateOverlayCache();
       });
       _startAnimation(0);
     } catch (e) {
@@ -758,7 +877,7 @@ class _RouteCandidatesScreenState extends State<RouteCandidatesScreen>
     final double rep = (m['repetition_ratio'] as num?)?.toDouble() ?? 0;
     final int shortTurns = (m['short_consecutive'] as num?)?.toInt() ?? 0;
     final int sharp = (m['sharp_turns'] as num?)?.toInt() ?? 0;
-    final Color color = _colors[_selected % _colors.length];
+    final Color color = RouteStyle.primary(_selected);
     return Padding(
       padding: const EdgeInsets.fromLTRB(12, 6, 12, 2),
       child: Column(
@@ -852,28 +971,62 @@ class _RouteCandidatesScreenState extends State<RouteCandidatesScreen>
 
   Widget _candidateCard(int index, PlannedRoute r) {
     final bool sel = index == _selected;
-    final Color color = _colors[index % _colors.length];
+    final Color color = RouteStyle.primary(index);
+    final Map<String, dynamic> m = r.metrics;
+    final int? turns = (m['turns'] as num?)?.toInt();
+    final double? density = (m['turn_density'] as num?)?.toDouble();
     return GestureDetector(
       onTap: () => _select(index),
       child: Container(
         padding: const EdgeInsets.all(8),
         decoration: BoxDecoration(
           border: Border.all(color: sel ? color : Colors.grey.shade300, width: sel ? 2 : 1),
-          borderRadius: BorderRadius.circular(8),
-          color: sel ? color.withAlpha(20) : Colors.white,
+          borderRadius: BorderRadius.circular(10),
+          color: sel ? color.withAlpha(18) : Colors.white,
+          boxShadow: sel
+              ? <BoxShadow>[BoxShadow(color: color.withAlpha(40), blurRadius: 6)]
+              : null,
         ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: <Widget>[
-            Text('路线 ${index + 1}', style: TextStyle(fontWeight: FontWeight.bold, color: color)),
-            const SizedBox(height: 2),
+            Row(
+              children: <Widget>[
+                Container(
+                  width: 10,
+                  height: 10,
+                  decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+                ),
+                const SizedBox(width: 5),
+                Text('路线 ${index + 1}',
+                    style: TextStyle(fontWeight: FontWeight.bold, color: color)),
+                if (r.recommended) ...<Widget>[
+                  const SizedBox(width: 5),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                    decoration: BoxDecoration(
+                      color: color,
+                      borderRadius: BorderRadius.circular(6),
+                    ),
+                    child: const Text('推荐',
+                        style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 10,
+                            fontWeight: FontWeight.bold)),
+                  ),
+                ],
+              ],
+            ),
+            const SizedBox(height: 3),
             Text('${(r.distanceM / 1000).toStringAsFixed(2)} km',
                 style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600)),
             Text(
               '误差 ${r.errorM.toStringAsFixed(0)}m',
               style: TextStyle(fontSize: 12, color: r.withinTolerance ? Colors.green[800] : Colors.red),
             ),
-            Text('闭合 ${r.closureM.toStringAsFixed(1)}m', style: const TextStyle(fontSize: 12)),
+            if (turns != null && density != null)
+              Text('$turns 次转弯 · ${density.toStringAsFixed(1)} 次/km',
+                  style: const TextStyle(fontSize: 12)),
             if (r.score != null)
               Text('评分 ${r.score!.toStringAsFixed(1)}', style: const TextStyle(fontSize: 12)),
           ],

@@ -58,4 +58,7 @@ public interface PolylineOptionsSink {
     //线交接类型
     void setLineJoinType(PolylineOptions.LineJoinType joinType);
 
+    //叠加顺序（本地补丁新增：值越大越靠上）
+    void setZIndex(float zIndex);
+
 }

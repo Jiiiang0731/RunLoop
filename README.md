@@ -8,10 +8,25 @@
 
 - ✅ 阶段 0：技术可行性报告 → `docs/feasibility.md`
 - ✅ 阶段 1：15km 闭合环线最小验证 → `docs/test_report.md`（3 候选，误差 +274/−322/+185m，闭合 0.7m）
-- ✅ 阶段 2：算法封装 + 路线评分 + 单元测试（25 用例通过）→ `backend/route_generator/`
-- ✅ 阶段 3：环境安装（Flutter/Android SDK/JDK17）+ 项目创建 + APK 构建（debug/release）→ `dist/`
-- ✅ 阶段 4（地图）：高德地图 SDK 接入 + 定位 + APK 构建（含原生库）→ `docs/phase4_map_report.md`
-- ⏳ 阶段 4（GPS）：跑步记录/锁屏后台/总结（代码已就绪，待真机验证）
+- ✅ 阶段 2：算法封装 + 路线评分 + 单元测试 → `backend/route_generator/`
+- ✅ 阶段 3：环境安装（Flutter/Android SDK/JDK17）+ 项目创建 + APK 构建 → `dist/`
+- ✅ 阶段 4（地图）：高德地图 SDK 接入 + 定位 + APK 构建 → `docs/phase4_map_report.md`
+- ✅ 阶段 D~I：距离校准/评分体系/真实转弯指标/五维评分/自适应控制点数（详见各阶段汇报）
+- ✅ **阶段 J：路线选择算法重构（骨架变体扫描+质量择优）+ 少转弯 + 显示美化 + 跑步导航 + 历史统计 → `docs/phase_j_report.md`**
+
+### 阶段 J 亮点（真实蔡甸 API 实测）
+
+| 指标 | 阶段 I | 阶段 J |
+| --- | --- | --- |
+| 15km App 首条评分 / 转弯 / 密度 | 41 / 31 / 2.03 | **69.3 / 17 / 1.14** |
+| 15km 三候选总调用 | 247 | **136** |
+| 20km 单候选评分 / 转弯 | 33.4 / 45 | **50.3 / 32** |
+| 路线显示 | 单色细线 | 白描边 + 渐变主线 + 圆角 |
+| 跑步页 | 蓝线 + 位置点 | 轨迹描边 + 进度 + 偏航 + 转弯提示 |
+
+- 算法：少点椭圆骨架（减转弯）+ 圆形多点骨架（兜底收敛）按 seed 互补，质量感知择优 + 提前终止控制调用。
+- 测试：Python 69 用例、Flutter 28 用例全绿；`flutter analyze lib test` 无 issue。
+- 详见 `docs/phase_j_report.md`（含探索标定数据、困难与待决策问题）。
 
 ## 目录结构
 
@@ -81,14 +96,14 @@ python backend/loop_gen.py --target 15000 --seeds 1,2,3   # 生成 3 条约 15km
 
 ## 构建状态与 APK
 
-✅ 已成功构建（Flutter 3.47.8 / Android SDK 36 / JDK 17），含高德地图 SDK：
+✅ 已成功构建（Flutter / Android SDK 36 / JDK 17），含高德地图 SDK + 阶段 J 插件补丁（gradient/colorList/zIndex）：
 
 | 文件 | 用途 | 大小 |
 | --- | --- | --- |
-| `dist/RunLoop-环跑-Android.apk` | 正式版（Release 签名 + R8 优化） | 70.4 MB |
-| `dist/RunLoop-环跑-Android-debug.apk` | 调试版（Debug 签名） | 188.7 MB |
+| `dist/RunLoop-环跑-Android.apk` | 正式版（Release 签名 + R8 优化） | 73.4 MB |
+| `dist/RunLoop-环跑-Android-debug.apk` | 调试版（Debug 签名） | 189.1 MB |
 
-- 应用名 **环跑**，applicationId `com.runloop.app`（已用 aapt 校验）。
+- 应用名 **环跑**，applicationId `com.runloop.app`（已用 aapt 校验）；AMap Key `com.amap.api.v2.apikey` 已注入（构建期从 `android/amap_key.properties` 占位符填充）。
 - 地图 SDK：`com.amap.api:3dmap:8.1.0` + `location:5.6.0`（与插件 `compileOnly` 版本一致）；APK 内含 `libAMapSDK_MAP_v8_1_0.so`（arm64-v8a/armeabi-v7a/x86_64）。
 - **AMap Key 采用构建注入**（不硬编码、不入库）：Key 存于 `android/amap_key.properties`（gitignore），manifest 用 `${AMAP_API_KEY}` 占位符；Dart 侧用 `--dart-define=AMAP_ANDROID_KEY=...`。构建命令：
   ```bash

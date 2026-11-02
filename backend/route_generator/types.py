@@ -82,6 +82,8 @@ class CalibrateResult:
     best_error_m: Optional[float]
     api_calls: int
     history: List[dict]
+    best_score: Optional[float] = None      # 最优闭环的质量评分（阶段 J）
+    best_metrics: Optional[dict] = None     # 最优闭环的转弯/直行/重复指标（阶段 J）
 
 
 @dataclass
@@ -96,6 +98,7 @@ class GenerateOptions:
     jitter: float = 0.15
     max_candidates: int = 3       # 生成到这么多个成功候选即停
     max_api_calls: int = 600      # 硬预算，超过即停止
+    per_seed_calls: int = 160     # 单种子调用上限（阶段 J：变体扫描的预算护栏）
 
 
 @dataclass
@@ -108,6 +111,7 @@ class Candidate:
     history: List[dict]
     error: Optional[str] = None
     metrics: Optional[dict] = None
+    recommended: bool = False    # 评分最高的达标候选（阶段 J：排序后置顶）
 
 
 @dataclass

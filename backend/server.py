@@ -116,6 +116,7 @@ def _serialize_candidate(c, target_m, tol_m):
     return {
         "seed": c.seed,
         "ok": True,
+        "recommended": bool(c.recommended),
         "distance_m": round(loop.distance_m, 1),
         "error_m": round(err, 1),
         "within_tolerance": within,
@@ -136,7 +137,7 @@ def _serialize_candidate(c, target_m, tol_m):
 
 @app.route("/api/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "service": "runloop-route-api", "version": "0.3"})
+    return jsonify({"status": "ok", "service": "runloop-route-api", "version": "0.4"})
 
 
 @app.route("/api/route/generate", methods=["POST"])

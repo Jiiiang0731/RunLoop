@@ -82,7 +82,15 @@ class PolylineController implements PolylineOptionsSink {
 
     @Override
     public void setGradient(boolean gradient) {
-        polyline.setGeodesic(gradient);
+        // 本地补丁修复：原实现误调 setGeodesic，导致更新时渐变不生效且大地曲线被篡改
+        PolylineOptions options = polyline.getOptions();
+        options.useGradient(gradient);
+        polyline.setOptions(options);
+    }
+
+    @Override
+    public void setZIndex(float zIndex) {
+        polyline.setZIndex(zIndex);
     }
 
     @Override
