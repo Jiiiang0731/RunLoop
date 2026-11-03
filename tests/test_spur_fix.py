@@ -137,6 +137,28 @@ class TestFixSpurs(unittest.TestCase):
             self.assertAlmostEqual(a[0], b[0], places=9)
             self.assertAlmostEqual(a[1], b[1], places=9)
 
+    def test_tolerance_aware_rejects_fix_beyond_tol(self):
+        """容差感知模式：修复会打破 ±tol → 拒绝并保持原路线（决策#1）。"""
+        loop = _make_loop(_spur_polyline())
+        target = loop.distance_m  # 以原距离为目标：修复缩短 ~418m 必超 100m 容差
+        res = fix_spurs(loop, MockPlanner(factor=1.4),
+                        target_m=target, tol_m=100.0)
+        self.assertEqual(res.fixes, [])
+        self.assertEqual(res.loop.polyline, loop.polyline)
+        self.assertIn("tolerance", [a.get("reject") for a in res.attempts])
+        self.assertEqual(res.calls, 1)  # plan 已发生（被守卫拦下），缓存可复用
+
+    def test_tolerance_aware_accepts_fix_within_tol(self):
+        """容差感知模式：修复后仍达标 → 正常采用（部分采用策略基础）。"""
+        loop = _make_loop(_spur_polyline())
+        agg = fix_spurs(loop, MockPlanner(factor=1.4))
+        self.assertEqual(len(agg.fixes), 1)
+        target = agg.loop.distance_m  # 以修复后距离为目标：修复不破坏容差
+        res = fix_spurs(loop, MockPlanner(factor=1.4),
+                        target_m=target, tol_m=100.0)
+        self.assertEqual(len(res.fixes), 1)
+        self.assertAlmostEqual(res.loop.distance_m, target, delta=1.0)
+
     def test_rejects_when_replacement_not_shorter(self):
         """替换路径不够短（factor 大）→ 拒绝，保持原路线。"""
         loop = _make_loop(_spur_polyline())
@@ -168,6 +190,76 @@ class TestFixSpurs(unittest.TestCase):
         self.assertEqual(_count_geo_turns(straight), 0)
         corner = [_east(0), _east(1), _north(55, _east(1)[0]), _north(110, _east(1)[0])]
         self.assertEqual(_count_geo_turns(corner), 1)
+
+
+class TestCrossSegmentFix(unittest.TestCase):
+    """绕行区间跨越 segment 边界时的合并拼接（回归：截断段的段首去重假设）。"""
+
+    @staticmethod
+    def _make_cross_loop():
+        pts = _spur_polyline()          # 50 点：0..19 东行, 20..24 北, 25..29 南, 30..49 东
+        apex = pts[24]
+        seg0_steps = [
+            PlanStep(instruction="东行", road="主路", distance_m=_arc_len(pts[0:20]),
+                     polyline=pts[0:20]),
+            PlanStep(instruction="北行支路", road="支路", distance_m=_arc_len(pts[19:25]),
+                     polyline=pts[20:25]),
+        ]
+        # seg1 首点 = apex（与 seg0 末点共享，build_loop 拼接时去重）
+        seg1_pts = [apex] + pts[25:50]
+        seg1_steps = [
+            PlanStep(instruction="南行支路", road="支路", distance_m=_arc_len(seg1_pts[0:6]),
+                     polyline=seg1_pts[0:6]),
+            PlanStep(instruction="东行", road="主路", distance_m=_arc_len(seg1_pts[5:26]),
+                     polyline=seg1_pts[6:26]),
+        ]
+        seg0 = RouteSegment(index=0, origin=pts[0], destination=apex,
+                            distance_m=_arc_len(pts[0:25]), duration_s=100.0,
+                            n_points=25, steps=seg0_steps)
+        seg1 = RouteSegment(index=1, origin=apex, destination=pts[49],
+                            distance_m=_arc_len(seg1_pts), duration_s=100.0,
+                            n_points=26, steps=seg1_steps)
+        polyline = pts[0:25] + seg1_pts[1:]
+        loop = LoopRoute(distance_m=_arc_len(pts), duration_s=200.0,
+                         closure_m=0.0, start_snap_m=0.0,
+                         polyline=polyline, segments=[seg0, seg1])
+        return loop, pts
+
+    def test_mapping_valid_before_fix(self):
+        loop, _ = self._make_cross_loop()
+        mapping = _build_index_map(loop)
+        self.assertIsNotNone(mapping)
+        self.assertEqual(len(mapping), 50)
+
+    def test_cross_segment_spur_fixed_and_consistent(self):
+        from backend.route_generator.spur_fix import fix_spurs
+        loop, pts = self._make_cross_loop()
+        res = fix_spurs(loop, MockPlanner(factor=1.4))
+        self.assertEqual(len(res.fixes), 1, f"attempts={res.attempts}")
+        self.assertEqual(res.calls, 1)
+        fixed = res.loop
+        # 合并为单段，起终点保持
+        self.assertEqual(len(fixed.segments), 1)
+        self.assertEqual(fixed.segments[0].origin, pts[0])
+        self.assertEqual(fixed.segments[0].destination, pts[49])
+        # steps 与折线一一对应（映射可重建 → 导航文本可重建）
+        mapping = _build_index_map(fixed)
+        self.assertIsNotNone(mapping, "跨段替换后映射失效")
+        concat = [p for st in fixed.segments[0].steps for p in st.polyline]
+        self.assertEqual(len(concat), len(fixed.polyline))
+        # 连续性：无空间跳变
+        max_gap = max(haversine(fixed.polyline[i - 1], fixed.polyline[i])
+                      for i in range(1, len(fixed.polyline)))
+        self.assertLess(max_gap, 100.0)
+        # 距离会计一致
+        self.assertAlmostEqual(fixed.distance_m,
+                               loop.distance_m - res.fixes[0].span_m + res.fixes[0].repl_m,
+                               delta=1.0)
+        # 再跑一轮 fix_spurs：不得出现 index_map 拒绝
+        res2 = fix_spurs(fixed, MockPlanner(factor=1.4))
+        self.assertEqual(res2.attempts, [])
+        self.assertEqual(res2.fixes, [])
+        self.assertEqual(res2.calls, 0)
 
 
 class TestFoldRatio(unittest.TestCase):

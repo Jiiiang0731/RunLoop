@@ -1,0 +1,28 @@
+[
+  {
+    "target": 15000,
+    "seed": 1,
+    "variant": "fig8_n8",
+    "shape": "fig8",
+    "n_points": 8,
+    "calls": 54,
+    "wall_s": 20.7,
+    "build_fails": 0,
+    "iters_used": 6,
+    "spur_fixes": 0,
+    "spur_recal": false,
+    "ok": true,
+    "dist": 15611.0,
+    "err": 611.0,
+    "within": false,
+    "closure": 0.56,
+    "score": 50.7,
+    "turns": 24,
+    "density": 1.53,
+    "sharp": 3,
+    "uturn": 0,
+    "straight_max": 2010.1,
+    "rep": 0.472,
+    "remaining_spurs": 5
+  }
+]

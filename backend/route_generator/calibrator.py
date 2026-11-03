@@ -22,7 +22,7 @@ from .loop_builder import build_loop
 from .nav_metrics import analyze_route
 from .planner import MapPlanner
 from .scorer import score_route
-from .spur_fix import fix_spurs
+from .spur_fix import MAX_FIXES, fix_spurs
 from .types import CalibrateResult, LoopRoute
 from .variants import SkeletonVariant, plan_variants
 
@@ -68,6 +68,20 @@ def _should_stop_early(err: float, score: float, metrics: dict, tol_m: int) -> b
     return (float(metrics.get("turn_density", 9.9)) <= EARLY_MAX_DENSITY
             and int(metrics.get("uturns", 9)) == 0
             and int(metrics.get("sharp_turns", 9)) <= 1)
+
+
+def _append_fix_events(history: list, sres, tag: str = "spur") -> None:
+    """把一轮 fix_spurs 的结果写入校准历史（修复明细 + 拒绝原因汇总）。"""
+    for f in sres.fixes:
+        history.append({"event": f"{tag}_fix", "saved_m": f.saved_m,
+                        "span_m": f.span_m, "repl_m": f.repl_m,
+                        "old_turns": f.old_turns, "new_turns": f.new_turns})
+    rejects: dict = {}
+    for a in sres.attempts:
+        reason = str(a.get("reject", "?")).split(":")[0]
+        rejects[reason] = rejects.get(reason, 0) + 1
+    if rejects:
+        history.append({"event": f"{tag}_reject", "reasons": rejects})
 
 
 def calibrate(planner: MapPlanner, start: GeoPoint, target_m: int, n_points: int,
@@ -154,49 +168,114 @@ def calibrate(planner: MapPlanner, start: GeoPoint, target_m: int, n_points: int
             stopped_early = True
 
     # ---- 阶段 K：无效绕行替换（只对达标最优路线做，硬约束 ±tol 不变） ----
+    # 三级策略（决策#1 绝对容差优先，决策#2 质量优先）：
+    #   1) 激进修复：接受所有通过结构守卫的修复；修完仍达标 → 直接采用；
+    #   2) 修出容差 → 割线法重校重建（≤3 次，预算门控）：第 1 次比例法
+    #      R×(target+总节省)/原距离（把被摘掉的绕行里程加回去），之后
+    #      用最近两组 (R, 修复后距离) 实测样本割线插值——距离对 R 高度
+    #      非线性（跨屏障路网突变），单次线性重校实测常失败；蔡甸实测
+    #      割线序列 15km: err −3132→+5533→−955→(预测≈达标)，第 3 次收敛；
+    #   3) 重校全部失败 → 容差感知模式重跑（plan 命中缓存近零成本），
+    #      只采用「修复后仍达标」的小绕行，否则回退原路线（硬约束赢）。
     if (fix_detours and best is not None and best_err is not None
             and abs(best_err) <= tol_m
             and (max_calls is None or calls < max_calls)):
+        pre_dist = best.distance_m
         sres = fix_spurs(best, planner, sleep=sleep)
         calls += sres.calls
-        for f in sres.fixes:
-            history.append({"event": "spur_fix", "saved_m": f.saved_m,
-                            "span_m": f.span_m, "repl_m": f.repl_m,
-                            "old_turns": f.old_turns, "new_turns": f.new_turns})
+        _append_fix_events(history, sres)
         if sres.fixes:
             fixed = sres.loop
             e = fixed.distance_m - target_m
             if abs(e) <= tol_m:
-                metrics = _loop_metrics(fixed, target_m)
-                score = score_route(target_m, fixed, metrics).total
+                metrics_f = _loop_metrics(fixed, target_m)
+                score_f = score_route(target_m, fixed, metrics_f).total
                 history.append({"event": "spur_accept", "err": round(e, 1),
-                                "score": score, "turns": metrics.get("turns")})
-                best, best_err, best_score, best_metrics = fixed, e, score, metrics
-            elif (best_variant is not None and
-                  (max_calls is None or calls + best_variant.n_points + 2 <= max_calls)):
-                # 修复把路线修短出容差 → 按修复后距离重校 R，重建一次再修（规范 3.3）
-                history.append({"event": "spur_recal", "err_after_fix": round(e, 1)})
-                R_adj = best_R * target_m / max(fixed.distance_m, 1.0)
-                wps = generate_ring(start, R_adj, best_variant.n_points, seed,
-                                    jitter=best_variant.jitter, aspect=best_variant.aspect,
-                                    angle_deg=best_variant.angle_deg, shape=best_variant.shape)
-                loop2, c2 = build_loop(planner, start, wps, sleep=sleep)
-                calls += c2
-                if not loop2.error:
-                    sres2 = fix_spurs(loop2, planner, sleep=sleep)
-                    calls += sres2.calls
-                    e2 = sres2.loop.distance_m - target_m
-                    if abs(e2) <= tol_m:
-                        metrics2 = _loop_metrics(sres2.loop, target_m)
-                        score2 = score_route(target_m, sres2.loop, metrics2).total
-                        if _is_better(e2, score2, best_err, best_score, tol_m):
-                            history.append({"event": "spur_recal_accept",
-                                            "err": round(e2, 1), "score": score2})
-                            best, best_err = sres2.loop, e2
-                            best_score, best_metrics = score2, metrics2
-                # 重校仍不达标 → 保留原 best（硬约束优先）
+                                "score": score_f, "turns": metrics_f.get("turns")})
+                best, best_err, best_score, best_metrics = fixed, e, score_f, metrics_f
             else:
-                history.append({"event": "spur_revert", "err_after_fix": round(e, 1)})
+                adopted = False
+                if best_variant is not None:
+                    history.append({"event": "spur_recal", "err_after_fix": round(e, 1)})
+                    saved_total = max(pre_dist - fixed.distance_m, 0.0)
+                    samples = [(best_R, fixed.distance_m)]
+                    R_next = best_R * (target_m + saved_total) / max(pre_dist, 1.0)
+                    need = best_variant.n_points + 12  # 重建腿数 + 修复/尝试余量
+                    for attempt in (1, 2, 3):
+                        if max_calls is not None and calls + need > max_calls:
+                            history.append({"event": "spur_recal_budget",
+                                            "attempt": attempt})
+                            break
+                        if not (0.6 * best_R <= R_next <= 1.8 * best_R):
+                            history.append({"event": "spur_recal_abort",
+                                            "R_mult": round(R_next / best_R, 3)})
+                            break
+                        wps = generate_ring(start, R_next, best_variant.n_points, seed,
+                                            jitter=best_variant.jitter,
+                                            aspect=best_variant.aspect,
+                                            angle_deg=best_variant.angle_deg,
+                                            shape=best_variant.shape)
+                        loop2, c2 = build_loop(planner, start, wps, sleep=sleep)
+                        calls += c2
+                        if loop2.error:
+                            history.append({"event": "spur_recal_reject",
+                                            "reason": "build_error",
+                                            "attempt": attempt, "error": loop2.error})
+                            break
+                        sres2 = fix_spurs(loop2, planner, sleep=sleep)
+                        calls += sres2.calls
+                        _append_fix_events(history, sres2, tag="recal")
+                        d2 = sres2.loop.distance_m
+                        samples.append((R_next, d2))
+                        e2 = d2 - target_m
+                        if abs(e2) <= tol_m:
+                            metrics2 = _loop_metrics(sres2.loop, target_m)
+                            score2 = score_route(target_m, sres2.loop, metrics2).total
+                            # 重建版已消除大绕行：达标且评分回落 ≤5 即采用。
+                            # （评分未完全计入「垃圾绕行」的观感代价，用户目标#3
+                            #  优先；决策#1 的硬约束只有 ±tol，此处已满足。）
+                            if score2 >= (best_score or 0.0) - 5.0:
+                                history.append({"event": "spur_recal_accept",
+                                                "attempt": attempt,
+                                                "err": round(e2, 1), "score": score2})
+                                best, best_err = sres2.loop, e2
+                                best_score, best_metrics = score2, metrics2
+                                adopted = True
+                            else:
+                                history.append({"event": "spur_recal_reject",
+                                                "reason": "score", "attempt": attempt,
+                                                "score2": score2,
+                                                "best_score": best_score})
+                            break  # 已达标（无论是否采用）：距离反馈不再有意义
+                        history.append({"event": "spur_recal_miss", "attempt": attempt,
+                                        "R_mult": round(R_next / best_R, 3),
+                                        "err2": round(e2, 1)})
+                        (R_a, d_a), (R_b, d_b) = samples[-2], samples[-1]
+                        if d_b == d_a:
+                            break
+                        R_next = R_a + (target_m - d_a) * (R_b - R_a) / (d_b - d_a)
+                if not adopted:
+                    # Stage 3：容差感知部分采用（只摘不破坏达标的小绕行）
+                    sres_c = fix_spurs(best, planner, sleep=sleep,
+                                       target_m=target_m, tol_m=tol_m)
+                    calls += sres_c.calls
+                    if sres_c.fixes:
+                        metrics_c = _loop_metrics(sres_c.loop, target_m)
+                        score_c = score_route(target_m, sres_c.loop, metrics_c).total
+                        if score_c >= (best_score or 0.0) - 5.0:
+                            e_c = sres_c.loop.distance_m - target_m
+                            history.append({"event": "spur_partial_accept",
+                                            "n_fixes": len(sres_c.fixes),
+                                            "err": round(e_c, 1), "score": score_c})
+                            best, best_err = sres_c.loop, e_c
+                            best_score, best_metrics = score_c, metrics_c
+                        else:
+                            history.append({"event": "spur_revert",
+                                            "reason": "partial_score",
+                                            "err_after_fix": round(e, 1)})
+                    else:
+                        history.append({"event": "spur_revert",
+                                        "err_after_fix": round(e, 1)})
 
     return CalibrateResult(loop=best,
                            best_error_m=(abs(best_err) if best_err is not None else None),

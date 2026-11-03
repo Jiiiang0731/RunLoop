@@ -249,7 +249,9 @@ def _build_index_map(loop: LoopRoute) -> Optional[List[Tuple[int, int]]]:
         for ti, st in enumerate(seg.steps):
             step_of_point.extend([(si, ti)] * len(st.polyline))
         if not step_of_point:
-            return None
+            # 跨段绕行替换后可能留下空段（0 steps ↔ 0 折线点，拼接仍一致），
+            # 跳过而不是中止；真正的结构损坏由末尾长度校验兜底。
+            continue
         # 与 build_loop 的 r.points 对应：段点列 = 所有 step 折线拼接
         start = 1 if si > 0 else 0
         if start >= len(step_of_point):
@@ -274,7 +276,9 @@ def _step_bounds(loop: LoopRoute, mapping: List[Tuple[int, int]],
 
 def _try_fix_one(loop: LoopRoute, mapping: List[Tuple[int, int]],
                  interval: Tuple[int, int], planner: MapPlanner,
-                 attempts: List[dict]) -> Tuple[Optional[LoopRoute], int, Optional[SpurFix]]:
+                 attempts: List[dict],
+                 target_m: Optional[float] = None,
+                 tol_m: float = 500.0) -> Tuple[Optional[LoopRoute], int, Optional[SpurFix]]:
     """对单个区间做 step 边界对齐 → 真实步行重连 → 校验 → 拼接。"""
     i, j = interval
     n = len(loop.polyline)
@@ -304,6 +308,12 @@ def _try_fix_one(loop: LoopRoute, mapping: List[Tuple[int, int]],
     p_end = loop.polyline[hi]
     old_slice = loop.polyline[lo:hi + 1]
     old_len = sum(haversine(old_slice[k - 1], old_slice[k]) for k in range(1, len(old_slice)))
+    # 真实 AMap step 可长达 1~2km：外扩对齐后区间过宽则放弃（爆炸半径控制），
+    # 在 plan 调用之前拦截，省一次 API。
+    if old_len > MAX_SPAN_M * 2.0:
+        attempts.append({"interval": [lo, hi], "reject": "snap_too_wide",
+                         "span_m": round(old_len, 1)})
+        return None, 0, None
 
     repl = planner.plan_walking(p_start, p_end)
     calls = 1
@@ -345,30 +355,35 @@ def _try_fix_one(loop: LoopRoute, mapping: List[Tuple[int, int]],
                          "old_rep": round(old_rep, 3), "new_rep": round(new_rep, 3)})
         return None, calls, None
 
-    new_segments: List[RouteSegment] = []
-    for si, seg in enumerate(loop.segments):
-        if si < seg_a or si > seg_b:
-            new_segments.append(seg)
-            continue
-        if si == seg_a and si == seg_b:
-            steps = seg.steps[:step_a] + new_steps + seg.steps[step_b + 1:]
-        elif si == seg_a:
-            steps = seg.steps[:step_a] + new_steps
-        elif si == seg_b:
-            steps = seg.steps[step_b + 1:]
-        else:
-            steps = []
-        dist = sum(s.distance_m for s in steps)
-        dur = sum(s.duration_s for s in steps)
-        npts = sum(len(s.polyline) for s in steps)
-        new_segments.append(RouteSegment(
-            index=seg.index, origin=seg.origin, destination=seg.destination,
-            distance_m=dist, duration_s=dur, n_points=npts, steps=steps))
-
     new_dist = loop.distance_m - old_len + new_len
+
+    # 容差感知模式（阶段 K：部分采用策略）：修复后若打破 ±tol 硬约束则拒绝，
+    # 让调用方继续尝试其他区间——只摘「不破坏达标」的小绕行。
+    if target_m is not None and abs(new_dist - target_m) > tol_m:
+        attempts.append({"interval": [lo, hi], "reject": "tolerance",
+                         "new_err": round(new_dist - target_m, 1)})
+        return None, calls, None
+
     new_dur = loop.duration_s - sum(
         s.duration_s for s in _replaced_steps(loop, seg_a, step_a, seg_b, step_b)
     ) + repl.duration_s
+
+    # 段重建：seg_a..seg_b 合并为单段（跨段替换时中间段的 steps 全部被换掉；
+    # 且 seg_b 若被截断，其「段首点=上段末点」的拼接去重假设会被破坏，
+    # 合并可保证 steps 拼接与折线严格一一对应，导航文本可重建）。
+    seg_a_obj = loop.segments[seg_a]
+    seg_b_obj = loop.segments[seg_b]
+    merged_steps = (list(seg_a_obj.steps[:step_a]) + new_steps
+                    + list(seg_b_obj.steps[step_b + 1:]))
+    merged = RouteSegment(
+        index=seg_a_obj.index, origin=seg_a_obj.origin,
+        destination=seg_b_obj.destination,
+        distance_m=sum(s.distance_m for s in merged_steps),
+        duration_s=sum(s.duration_s for s in merged_steps),
+        n_points=sum(len(s.polyline) for s in merged_steps),
+        steps=merged_steps)
+    new_segments = (list(loop.segments[:seg_a]) + [merged]
+                    + list(loop.segments[seg_b + 1:]))
     closure = haversine(new_poly[0], new_poly[-1]) if len(new_poly) >= 2 else 0.0
     fixed = LoopRoute(
         distance_m=new_dist, duration_s=new_dur,
@@ -398,11 +413,17 @@ def _replaced_steps(loop: LoopRoute, seg_a: int, step_a: int,
 
 
 def fix_spurs(loop: LoopRoute, planner: MapPlanner,
-              max_fixes: int = MAX_FIXES, sleep: float = 0.0) -> SpurFixResult:
+              max_fixes: int = MAX_FIXES, sleep: float = 0.0,
+              target_m: Optional[float] = None,
+              tol_m: float = 500.0) -> SpurFixResult:
     """对闭环做无效绕行替换（逐轮：检测→替换→重检测，索引安全）。
 
     返回修复后的新 LoopRoute（原对象不修改）、消耗的 API 调用数与修复记录。
-    距离是否仍达标由调用方复检（本函数不动 tol 语义）。
+
+    target_m=None（默认，激进模式）：接受一切通过结构守卫（更短/转弯不增/
+    rep 不恶化）的修复，达标复检交给调用方（calibrator 走割线重校或回退）。
+    target_m 给定（容差感知模式）：只接受修复后仍满足 |dist-target| <= tol_m
+    的替换，其余记 reject="tolerance" 并尝试下一区间——用于「部分采用」。
     """
     calls = 0
     fixes: List[SpurFix] = []
@@ -418,7 +439,8 @@ def fix_spurs(loop: LoopRoute, planner: MapPlanner,
             break
         fixed_one = False
         for iv in intervals:
-            new_loop, c, fix = _try_fix_one(cur, mapping, iv, planner, attempts)
+            new_loop, c, fix = _try_fix_one(cur, mapping, iv, planner, attempts,
+                                            target_m=target_m, tol_m=tol_m)
             calls += c
             if new_loop is not None and fix is not None:
                 cur = new_loop
