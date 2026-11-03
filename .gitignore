@@ -42,3 +42,7 @@ android/app/src/main/java/io/flutter/plugins/GeneratedPluginRegistrant.java
 .vscode/
 .DS_Store
 Thumbs.db
+
+# ===== 运行日志（含脱敏访问记录，仍不入库） =====
+logs/
+backend/out/*_log.txt
