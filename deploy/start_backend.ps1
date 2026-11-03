@@ -5,7 +5,9 @@
 #
 # 高德 Web Key：由 backend/server.py 读取 config/amap_key.local（已 gitignore），
 # 或通过环境变量 RUNLOOP_AMAP_KEY 注入。Key 绝不进入 Git/日志/响应。
-$ErrorActionPreference = 'Stop'
+# 注：EAP 用 Continue——PS 5.1 下 Stop + *>> 流重定向时，python 的良性 stderr
+# 输出也会误抛终止脚本；失败由 waitress 自身退出码/日志体现。
+$ErrorActionPreference = 'Continue'
 
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root

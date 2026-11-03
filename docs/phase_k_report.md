@@ -20,7 +20,7 @@
 | ⑧ | 安全：Key 仅服务端、限流、设备配额、并发闸、熔断、日志脱敏 | ✅ 完成 | `b8f6e50`；【代码测试】test_guard 13 + test_server_api 17 |
 | ⑨ | 隐私：默认不上传 GPS、应用内隐私声明 | ✅ 完成 | `7a9ae68` consent_screen 六条声明 |
 | ⑩ | 离线：选中路线全量入库、无网可看可跑、服务器宕机明确报错 | ✅ 代码完成 | `7a9ae68`；【真机测试】待飞行模式验证 |
-| ⑪ | 开机自启 + 合理防睡眠（不擅改电源设置，先说明） | ✅ 脚本完成 | `58875e6`；set_awake.ps1 需用户交互确认，未执行 |
+| ⑪ | 开机自启 + 合理防睡眠（不擅改电源设置，先说明） | ✅ 已注册 | 启动文件夹 `RunLoopBackend.vbs` 已写入（任务计划需管理员，自动降级）；后端已实测拉起；set_awake.ps1 需用户确认，未执行 |
 | ⑫ | 测试全绿 + 蔡店 5/10/15/20km 回归（spur 前后对比） | ✅ 完成 | Python 123 ✅ Dart 39 ✅；回归 7/7 达标（637 次真实调用），数据见 §5 |
 
 ## 2. 交付物清单
@@ -167,10 +167,19 @@ CELL_M=25 ｜ MATCH_M=25 ｜ 跨度 150–1200m ｜ 折返比 ≥0.5 ｜ 最小�
 
 ## 6. 【Tailscale 公网测试】部署验证（A–G）
 
-**当前状态：未验证（等待用户完成安装清单）。** 脚本已就绪并通过语法校验（4/4，UTF-8 BOM 兼容 PowerShell 5.1/7）；后端回环监听已在本机实测：
+**当前状态：Tailnet 链路未验证（等待用户完成安装清单）；本机侧前置已全部就绪并实测。**
 
-- waitress smoke（`b8f6e50` 时验证）：`GET http://127.0.0.1:8001/api/health` → 200 `{"breaker":"closed","env":"production","served":0,"service":"runloop-route-api","status":"ok","version":"0.5"}`；`Server: RunLoopAPI/0.5`；
-- `Get-NetTCPConnection` 确认 LISTEN 仅 127.0.0.1；同机局域网 IP `192.168.1.100:8001` 拒绝连接（「无法连接到远程服务器」）→ **回环红线成立**；
+本机已实测（2026-11-03 14:20）：
+- waitress 生产后端经 `deploy/start_backend.ps1` 拉起，`GET http://127.0.0.1:8000/api/health`
+  → 200 `{"breaker":"closed","env":"production","served":0,"service":"runloop-route-api","status":"ok","version":"0.5"}`；
+- `Get-NetTCPConnection -LocalPort 8000 -State Listen` → **仅 127.0.0.1:8000**；
+  （排查中发现并终止了一个上午遗留的旧版开发服务器 `python backend/server.py`，
+  它绑 0.0.0.0:8000 对局域网可见——阶段 J 调试残留，非阶段 K 代码；已写入
+  `deploy/README_deploy.md` 常见问题）；
+- 登录自启已注册：任务计划需管理员权限被拒 → 自动降级写入用户启动文件夹
+  `Startup\RunLoopBackend.vbs`（隐藏窗口、无需提权）；
+- 早前 smoke（`b8f6e50` 时，端口 8001）：`Server: RunLoopAPI/0.5` 头、
+  同机局域网 IP `192.168.1.100:8001` 拒绝连接 → 回环红线成立；
 - Funnel：从未开启（setup 脚本内置红线检查，检测到开启即告警）。
 
 | 项 | 内容 | 状态 |
@@ -225,7 +234,7 @@ CELL_M=25 ｜ MATCH_M=25 ｜ 跨度 150–1200m ｜ 折返比 ≥0.5 ｜ 最小�
 ## 11. 用户操作清单（最小集）
 
 1. 按 `docs/tailscale_setup_guide.md` 完成：PC 安装登录 Tailscale → 控制台开 MagicDNS + HTTPS Certificates → 手机装 Tailscale 登录同一账号；
-2. 回复我「装好了」→ 我运行 `deploy/setup_tailscale_serve.ps1` 完成 A–C/E 验证并读取真实地址；
+2. 回复我「装好了」→ 我运行 `deploy/setup_tailscale_serve.ps1` 完成 A–C/E 验证并读取真实地址（后端 waitress 已在运行、登录自启已注册，这两项无需你操作）；
 3. （可选）回复「同意防睡眠」→ 我运行 `deploy/set_awake.ps1`（仅 AC 待机=从不，可随时恢复）；
 4. 安装 `app-debug.apk` 真机试用（同校园网）；我拿到真实地址后构建 release APK 供移动数据验证 D/F/G；
 5. 重启一次电脑验证 G（自启）。

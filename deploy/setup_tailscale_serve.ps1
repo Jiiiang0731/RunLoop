@@ -11,7 +11,10 @@
 # 安全红线：不启用 Funnel（不对公网开放）；后端只绑回环。
 # 前置：Tailscale 控制台 → DNS 页已开启 MagicDNS + HTTPS Certificates
 #      （见 docs/tailscale_setup_guide.md）。
-$ErrorActionPreference = 'Stop'
+#
+# 注：EAP 用 Continue——PS 5.1 下 Stop + 原生命令 stderr 重定向会误抛；
+# 失败路径全部由显式 $LASTEXITCODE / try-catch / throw 覆盖。
+$ErrorActionPreference = 'Continue'
 
 # 1. 安装与登录检查
 $ts = Get-Command tailscale -ErrorAction SilentlyContinue

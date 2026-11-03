@@ -8,10 +8,10 @@
 
 | 步骤 | 命令 | 说明 |
 | --- | --- | --- |
-| 1 | `pwsh -File deploy\start_backend.ps1` | 启动后端（生产模式，回环 8000）。验证：`curl http://127.0.0.1:8000/api/health` |
-| 2 | `pwsh -File deploy\setup_tailscale_serve.ps1` | 读取**真实** MagicDNS 名 → `tailscale serve --bg 8000` → 经 Tailnet 验证 HTTPS → 打印正式版构建命令 |
-| 3 | `pwsh -File deploy\register_autostart.ps1` | 注册登录自启任务 `RunLoopBackend`（Tailscale 自身由安装器随系统启动） |
-| 4 | `pwsh -File deploy\set_awake.ps1` | **可选**：AC 防睡眠（交互确认后才修改；不改电池策略） |
+| 1 | `powershell -File deploy\start_backend.ps1` | 启动后端（生产模式，回环 8000）。验证：`Invoke-RestMethod http://127.0.0.1:8000/api/health` |
+| 2 | `powershell -File deploy\setup_tailscale_serve.ps1` | 读取**真实** MagicDNS 名 → `tailscale serve --bg 8000` → 经 Tailnet 验证 HTTPS → 打印正式版构建命令 |
+| 3 | `powershell -File deploy\register_autostart.ps1` | 注册登录自启：优先任务计划（需管理员），自动降级到用户启动文件夹 VBS（无需提权）。**本机已注册完成**（Startup\RunLoopBackend.vbs） |
+| 4 | `powershell -File deploy\set_awake.ps1` | **可选**：AC 防睡眠（交互确认后才修改；不改电池策略） |
 
 第 2 步成功后会打印形如下面的构建命令（主机名以你机器实际为准，脚本从
 `tailscale status --json` 读取，绝不手工编造）：
@@ -34,6 +34,11 @@ flutter build apk --release --dart-define=TAILNET_BASE_URL=https://<机器名>.<
 - `tailscale serve` 报证书错误：控制台 DNS 页确认「HTTPS Certificates」已开启，等 30 秒重试。
 - 手机浏览器打不开 HTTPS 地址：确认 Android Tailscale 客户端处于 Connected；确认没开 Funnel 以外的代理。
 - 后端 503 `UPSTREAM_QUOTA`：AMap 当日配额触顶，熔断器 120s 自动半开探测；不要刷接口。
+- **8000 端口被占 / 出现 0.0.0.0:8000 监听**：多半是旧版开发服务器残留
+  （`python backend/server.py`，阶段 J 及以前默认绑全网卡）。处理：
+  `Get-NetTCPConnection -LocalPort 8000 -State Listen` 找到非 127.0.0.1 的
+  PID → `Stop-Process -Id <pid> -Force`。生产形态只允许 127.0.0.1:8000
+  （waitress，`deploy\start_backend.ps1`）。
 - 换电脑/重装：重跑第 1–3 步即可；MagicDNS 名不变则 APK 无需重打。
 - 以后要迁公网（可选路径）：腾讯云轻量 HK 38–54 元/月 + 域名 ICP 备案 1–4 周；届时只需换
   `TAILNET_BASE_URL` 注入值并重打 APK，服务端代码零改动。
