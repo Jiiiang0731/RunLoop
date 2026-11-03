@@ -267,6 +267,23 @@ def create_app() -> Flask:
             "served": state.served,
         })
 
+    @app.route("/api/client-config", methods=["GET"])
+    def client_config():
+        """远程配置（App 启动时拉取并缓存 24h）：不发版即可微调的客户端参数。
+
+        只下发非敏感调优项；公告文本可用 RUNLOOP_ANNOUNCEMENT 环境变量注入。
+        """
+        return jsonify({
+            "success": True,
+            "config": {
+                "service_version": SERVICE_VERSION,
+                "announcement": os.environ.get("RUNLOOP_ANNOUNCEMENT", ""),
+                "generate": {"max_api_calls": DEFAULT_MAX_API_CALLS,
+                             "sleep_s": 0.05},
+                "pois": {"interval_m": 1000, "radius": 500, "limit": 3},
+            },
+        })
+
     @app.route("/api/route/generate", methods=["POST"])
     def generate():
         t0 = time.time()

@@ -31,11 +31,12 @@ class RunScreen extends StatefulWidget {
 }
 
 class _RunScreenState extends State<RunScreen> {
-  /// 偏航判定阈值（米）：城市 GPS 误差 ±20~50m，120m 兼顾灵敏与误报。
-  static const double _offRouteMeters = 120.0;
+  /// 偏航判定阈值（米）：集中配置于 AppConfig（决策#6）。
+  /// 城市 GPS 误差 ±20~50m，120m 兼顾灵敏与误报；未做长距离实跑标定。
+  static const double _offRouteMeters = AppConfig.offRouteMeters;
 
   /// 投影搜索窗口（米）：只在上次里程 ±250m 内找最近点，避免吸附到重叠的另一条腿。
-  static const double _matchWindowM = 250.0;
+  static const double _matchWindowM = AppConfig.matchWindowM;
 
   final RunRecorder _recorder = RunRecorder();
   bool _ending = false;

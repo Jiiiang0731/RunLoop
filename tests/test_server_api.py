@@ -64,6 +64,18 @@ class TestHealth(ServerApiBase):
         self.assertEqual(r.status_code, 404)
         self.assertEqual(r.get_json()["error_code"], "NOT_FOUND")
 
+    def test_client_config_contract(self):
+        r = self.client.get("/api/client-config")
+        self.assertEqual(r.status_code, 200)
+        j = r.get_json()
+        self.assertTrue(j["success"])
+        cfg = j["config"]
+        self.assertEqual(cfg["service_version"], "0.5")
+        self.assertEqual(cfg["announcement"], "")
+        self.assertEqual(cfg["generate"]["max_api_calls"], 800)
+        self.assertEqual(cfg["pois"]["radius"], 500)
+        self.assertNotIn("TEST-SECRET", r.get_data(as_text=True))
+
 
 class TestValidationAndMasking(ServerApiBase):
     def test_bad_target_400(self):
