@@ -10,10 +10,12 @@ from .geo import GeoPoint
 
 def generate_ring(center: GeoPoint, radius_m: float, n: int, seed: int,
                   jitter: float = 0.15, aspect: float = 1.0,
-                  angle_deg: float = 0.0) -> List[GeoPoint]:
+                  angle_deg: float = 0.0, shape: str = "ring") -> List[GeoPoint]:
     """
-    生成 n 个控制点，近似分布在半径 radius_m 的环上。
+    生成 n 个控制点，按 shape 分布在半径 radius_m 的骨架曲线上。
 
+    - shape: "ring" 圆/椭圆（默认）；"fig8" 双纽线 8 字（Gerono lemniscate）；
+      "petal" 四瓣玫瑰线 r = R·cos(2θ)（阶段 K 决策#4：复合骨架实测探索）。
     - aspect: 椭圆轴比（1.0 = 圆；>1 南北拉长，<1 东西拉长）。
     - angle_deg: 整体旋转角度。
     - jitter: 半径随机抖动比例。
@@ -29,8 +31,19 @@ def generate_ring(center: GeoPoint, radius_m: float, n: int, seed: int,
     for i in range(n):
         th = base + 2 * math.pi * i / n
         rr = radius_m * (1 + rng.uniform(-jitter, jitter))
-        x = rr * math.cos(th)            # 东西向
-        y = rr * math.sin(th) * aspect   # 南北向（受 aspect 缩放）
+        if shape == "fig8":
+            # Gerono 双纽线：x = R cos t, y = R sin t cos t（×2 归一化振幅，
+            # 使 x/y 半轴与同参数椭圆一致，R 的初值估计仍可复用）
+            x = rr * math.cos(th)
+            y = rr * math.sin(th) * math.cos(th) * 2.0 * aspect
+        elif shape == "petal":
+            # 玫瑰线（带符号 r，θ 走一圈遍历全部 4 瓣）
+            rm = rr * math.cos(2 * th)
+            x = rm * math.cos(th)
+            y = rm * math.sin(th) * aspect
+        else:
+            x = rr * math.cos(th)            # 东西向
+            y = rr * math.sin(th) * aspect   # 南北向（受 aspect 缩放）
         xr = x * math.cos(rot) - y * math.sin(rot)
         yr = x * math.sin(rot) + y * math.cos(rot)
         pts.append((round(lng + xr / mlng, 6), round(lat + yr / mlat, 6)))

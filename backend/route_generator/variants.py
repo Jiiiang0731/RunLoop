@@ -26,6 +26,7 @@ class SkeletonVariant:
     jitter: float       # 半径随机抖动比例
     max_iters: int      # 该变体的 R 缩放迭代预算
     label: str          # 展示/日志用标签
+    shape: str = "ring"  # 骨架曲线：ring / fig8 / petal（阶段 K 决策#4）
 
 
 def lean_n_points(n_points: int) -> int:

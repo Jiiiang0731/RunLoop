@@ -20,6 +20,10 @@ from .scorer import (
 )
 from .nav_metrics import analyze_route, detect_turns
 from .variants import SkeletonVariant, plan_variants
+from .spur_fix import (
+    fix_spurs, find_spur_intervals, SpurFix, SpurFixResult,
+)
+from .overlap import detect_overlaps
 from .generator import generate_candidates, adaptive_n_points, rank_candidates
 
 __all__ = [
@@ -34,5 +38,7 @@ __all__ = [
     "turn_density_score", "long_straight_score", "sharp_short_score",
     "analyze_route", "detect_turns", "adaptive_n_points",
     "SkeletonVariant", "plan_variants", "rank_candidates",
+    "fix_spurs", "find_spur_intervals", "SpurFix", "SpurFixResult",
+    "detect_overlaps",
     "generate_candidates",
 ]

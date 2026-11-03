@@ -77,6 +77,7 @@ def generate_candidates(planner: MapPlanner, start: GeoPoint,
             tol_m=options.tol_m, max_iters=options.max_iters,
             detour_factor=options.detour_factor, sleep=options.sleep_s,
             jitter=options.jitter, max_calls=per_seed,
+            fix_detours=options.fix_detours,
         )
         dt = round(time.time() - t0, 2)
         stage_times[f"seed_{seed}"] = dt

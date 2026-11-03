@@ -91,14 +91,15 @@ class GenerateOptions:
     target_m: int
     n_points: int = 0          # 0 = 按目标距离自适应
     seeds: List[int] = field(default_factory=lambda: [1, 2, 3])
-    tol_m: int = 500
+    tol_m: int = 500           # 硬约束（阶段 K 决策#1：绝对 ±500m，不改相对容差）
     max_iters: int = 8
     detour_factor: float = 1.7
     sleep_s: float = 0.02
     jitter: float = 0.15
     max_candidates: int = 3       # 生成到这么多个成功候选即停
-    max_api_calls: int = 600      # 硬预算，超过即停止
-    per_seed_calls: int = 160     # 单种子调用上限（阶段 J：变体扫描的预算护栏）
+    max_api_calls: int = 800      # 硬预算，超过即停止（阶段 K 决策#2：质量优先，预算上调）
+    per_seed_calls: int = 240     # 单种子调用上限（阶段 K：质量优先 + 绕行修复余量）
+    fix_detours: bool = True      # 阶段 K：达标路线做无效绕行替换（spur_fix）
 
 
 @dataclass
