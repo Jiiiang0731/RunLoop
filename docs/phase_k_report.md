@@ -48,7 +48,7 @@
 | 套件 | 数量 | 结果 | 说明 |
 | --- | --- | --- | --- |
 | Python `tests/`（pytest） | 123 | ✅ 全绿 | 含 spur_fix 跨段/容差 20 项、guard 13 项、server API 契约 17 项、overlap v2 配对 5 项 |
-| Dart `test/`（flutter test） | 39 | ✅ 全绿 | route_path 24 + run_recorder 3 + turn_annotations 12 |
+| Dart `test/`（flutter test） | 45 | ✅ 全绿 | route_path 24 + run_recorder 3 + turn_annotations 12 + offline_data 6（离线 JSON 往返无损/幂等 + 设备 ID 契约） |
 | `flutter analyze`（lib/test） | — | ✅ 0 error / 0 warning | 仅 1 条 info 级 lint（use_null_aware_elements，保留 if 写法以兼容 SDK 约束） |
 | debug APK 构建 | — | ✅ `√ Built app-debug.apk` | Gradle 76s；exit 1 为 SDK XML 版本警告（良性） |
 
