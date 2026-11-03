@@ -20,16 +20,16 @@ double haversineMeters(LatLng a, LatLng b) {
 }
 
 /// 生成一个朝上（北）的箭头位图：主色箭形 + 白色描边（任何底图上都清晰），
-/// 配合 [Marker.rotation] 使用。
+/// 配合 [Marker.rotation] 使用。阶段 K v2：48px → 36px（小巧、不压细主线）。
 Future<BitmapDescriptor> createArrowIcon(Color color) async {
-  const double size = 48;
+  const double size = 36;
   final ui.PictureRecorder recorder = ui.PictureRecorder();
   final Canvas canvas = Canvas(recorder);
   final Path path = Path()
-    ..moveTo(size / 2, 6)
-    ..lineTo(size - 11, size - 9)
-    ..lineTo(size / 2, size - 16)
-    ..lineTo(11, size - 9)
+    ..moveTo(size / 2, 5)
+    ..lineTo(size - 8, size - 7)
+    ..lineTo(size / 2, size - 12)
+    ..lineTo(8, size - 7)
     ..close();
   // 先画白色描边（略粗），再画主色填充
   canvas.drawPath(
@@ -37,10 +37,40 @@ Future<BitmapDescriptor> createArrowIcon(Color color) async {
     Paint()
       ..color = Colors.white
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 5
+      ..strokeWidth = 4
       ..strokeJoin = ui.StrokeJoin.round,
   );
   canvas.drawPath(path, Paint()..color = color);
+  final ui.Image image =
+      await recorder.endRecording().toImage(size.toInt(), size.toInt());
+  final ByteData? data = await image.toByteData(format: ui.ImageByteFormat.png);
+  image.dispose();
+  return BitmapDescriptor.fromBytes(data!.buffer.asUint8List());
+}
+
+/// 去/返转弯标注图标（阶段 K 规范③）：白色圆底 + 彩色人字形（chevron），
+/// 与实心方向箭头明显区分；配合 [Marker.rotation] 指向行进方向。
+/// 颜色由调用方传入（去=青 / 返=紫，见 RouteStyle.turnOut/BackColor）。
+Future<BitmapDescriptor> createTurnAnnotationIcon(Color color) async {
+  const double size = 30;
+  final ui.PictureRecorder recorder = ui.PictureRecorder();
+  final Canvas canvas = Canvas(recorder);
+  const Offset c = Offset(size / 2, size / 2);
+  canvas.drawCircle(c, size / 2 - 2, Paint()..color = const Color(0x44000000));
+  canvas.drawCircle(c, size / 2 - 3.5, Paint()..color = Colors.white);
+  final Path chev = Path()
+    ..moveTo(7.5, 19.5)
+    ..lineTo(size / 2, 8.5)
+    ..lineTo(size - 7.5, 19.5);
+  canvas.drawPath(
+    chev,
+    Paint()
+      ..color = color
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 4.2
+      ..strokeCap = ui.StrokeCap.round
+      ..strokeJoin = ui.StrokeJoin.round,
+  );
   final ui.Image image =
       await recorder.endRecording().toImage(size.toInt(), size.toInt());
   final ByteData? data = await image.toByteData(format: ui.ImageByteFormat.png);
@@ -113,11 +143,11 @@ double bearingDeg(LatLng a, LatLng b) {
   return (deg + 360) % 360;
 }
 
-/// 箭头数量：按路线长度（每约 2.5km 一个，限制 3~8 个）。
+/// 箭头数量（阶段 K v2：小巧稀疏——每约 3.5km 一个，限制 2~5 个）。
 int arrowCountForLengthMeters(double lengthM) {
   if (lengthM <= 0) return 0;
-  final int n = (lengthM / 2500).round();
-  return n.clamp(3, 8);
+  final int n = (lengthM / 3500).round();
+  return n.clamp(2, 5);
 }
 
 /// 按「沿路线累计距离」均匀取箭头点，方位角取该点的真实前进方向。

@@ -1,5 +1,4 @@
 import 'dart:convert';
-import 'dart:math' as math;
 
 import 'package:amap_flutter_base/amap_flutter_base.dart';
 import 'package:amap_flutter_map/amap_flutter_map.dart';
@@ -12,13 +11,21 @@ import '../services/storage/database.dart';
 import '../utils/map_icons.dart';
 import '../utils/route_path.dart';
 import '../utils/route_style.dart';
+import '../utils/turn_annotations.dart';
 import 'run_screen.dart';
 
 /// 候选路线页：路线生长动画 + 移动标记 + 相机跟随 + 完整静态预览 + 自然导航 + 按里程地标。
 ///
-/// 阶段 J 视觉升级：选中路线 = 白描边 + 渐变主线 + 圆角端点（专业地图式包边），
-/// 未选中路线半透明细线；静态覆盖物缓存 + 生长线/跑者固定 id 逐帧原地更新，
-/// 避免每帧「删旧+加新」造成卡顿（阶段 H 教训）。
+/// 阶段 K 视觉 v2 + 数据连续性拆分（规范①④⑤）：
+/// - **canonical**：服务端折线 `_routes[i].polyline`，永不修改（导航/GPS/指标同源）；
+/// - **display**：静态细主线（2.8dp 渐变 + 4.6dp 轻描边），完成后整条绘制，
+///   不再做 ±10m 重复段偏移拆分（重复段改由标注层表达，折线零失真）；
+/// - **animation**：生长线（固定 id 原地更新）；完成瞬间静态线已在其下一帧
+///   同屏（静态在下、生长在上一帧共存），postFrameCallback 再移除生长层，
+///   切换零空窗（阶段 J 验收动画保留）；
+/// - **turnAnnotations**：去/返两侧标注（青/紫 chevron，像素级侧偏随缩放换算，
+///   纯视觉，不触碰 canonical）；
+/// - 未选中路线半透明细线；静态覆盖物缓存 + 稳定 id，避免逐帧删旧加新。
 class RouteCandidatesScreen extends StatefulWidget {
   const RouteCandidatesScreen({
     super.key,
@@ -45,8 +52,6 @@ class RouteCandidatesScreen extends StatefulWidget {
 
 class _RouteCandidatesScreenState extends State<RouteCandidatesScreen>
     with SingleTickerProviderStateMixin {
-  static const double _offsetMeters = 10.0;
-
   late List<PlannedRoute> _routes;
   int _selected = 0;
   AMapController? _controller;
@@ -55,10 +60,26 @@ class _RouteCandidatesScreenState extends State<RouteCandidatesScreen>
   BitmapDescriptor? _arrowIcon;
   BitmapDescriptor? _runnerIcon;
   BitmapDescriptor? _startIcon;
+  BitmapDescriptor? _turnOutIcon;
+  BitmapDescriptor? _turnBackIcon;
 
   late AnimationController _anim;
+
+  /// animation 层：生长动画取点（由 canonical 折线构建，只读）。
   RoutePath? _path;
   bool _animDone = false;
+
+  /// 完成瞬间的「一帧共存」：静态 display 层已画，生长层多留一帧再移除，
+  /// 保证切换零空窗（规范⑤）。
+  bool _keepGrowth = false;
+
+  /// turnAnnotations 层：当前选中路线的去/返标注（纯视觉）。
+  List<TurnAnnotation> _annotations = <TurnAnnotation>[];
+
+  /// 标注像素→米换算所需的当前缩放（onCameraMove 节流更新）。
+  double _lastZoom = 14.0;
+  DateTime _lastCamUpdate = DateTime.fromMillisecondsSinceEpoch(0);
+
   int _followTick = 0;
   /// 把重建节流到 ~30fps，避免每帧全量刷新平台通道导致卡顿。
   final ValueNotifier<double> _animProgress = ValueNotifier<double>(0);
@@ -80,6 +101,7 @@ class _RouteCandidatesScreenState extends State<RouteCandidatesScreen>
 
   /// 静态覆盖物缓存（未选中路线 / 完成后的选中路线 / 起点标记 / 方向箭头）。
   /// 仅在路线、选中项、动画状态、图标变化时重建；动画期间逐帧复用（id 稳定）。
+  /// 注：标注 Marker 随缩放变位置，不入缓存（每次重算但 id 稳定 → 原地更新）。
   Set<Polyline>? _staticPolylinesCache;
   Set<Marker>? _staticMarkersCache;
 
@@ -119,12 +141,27 @@ class _RouteCandidatesScreenState extends State<RouteCandidatesScreen>
 
   void _onAnimStatus(AnimationStatus status) {
     if (status == AnimationStatus.completed) {
-      setState(() {
-        _animDone = true;
-        _invalidateOverlayCache(); // 完成后改画静态渐变线 + 箭头
-      });
+      _finishAnimation();
       _fitSelectedRoute();
     }
+  }
+
+  /// 动画完成 → display/animation 层「一帧共存」交接（规范⑤）：
+  /// 本帧同时包含静态完整主线（下）与满进度生长线（上），postFrameCallback
+  /// 移除生长层——任何时刻路线都完整可见，切换零空窗。
+  void _finishAnimation() {
+    if (!mounted || (_animDone && !_keepGrowth)) return;
+    setState(() {
+      _animDone = true;
+      _keepGrowth = true;
+      _invalidateOverlayCache(); // 完成后改画静态渐变线 + 箭头 + 标注
+    });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      setState(() {
+        _keepGrowth = false;
+      });
+    });
   }
 
   Future<void> _loadIcons() async {
@@ -132,10 +169,16 @@ class _RouteCandidatesScreenState extends State<RouteCandidatesScreen>
       final BitmapDescriptor arrow =
           await createArrowIcon(RouteStyle.primary(_selected));
       final BitmapDescriptor start = await createStartIcon();
+      final BitmapDescriptor turnOut =
+          await createTurnAnnotationIcon(RouteStyle.turnOutColor);
+      final BitmapDescriptor turnBack =
+          await createTurnAnnotationIcon(RouteStyle.turnBackColor);
       if (mounted) {
         setState(() {
           _arrowIcon = arrow;
           _startIcon = start;
+          _turnOutIcon = turnOut;
+          _turnBackIcon = turnBack;
           _invalidateOverlayCache();
         });
       }
@@ -195,7 +238,10 @@ class _RouteCandidatesScreenState extends State<RouteCandidatesScreen>
       _selected = index;
       _path = path;
       _animDone = false;
+      _keepGrowth = false;
       _followTick = 0;
+      // turnAnnotations 层：由 canonical 折线 + 服务端 overlaps 派生（只读）
+      _annotations = buildTurnAnnotations(_routes[index]);
       _invalidateOverlayCache();
     });
     _loadRouteIcons(index);
@@ -261,10 +307,7 @@ class _RouteCandidatesScreenState extends State<RouteCandidatesScreen>
     _anim.stop();
     _anim.value = 1.0;
     _animProgress.value = 1.0;
-    setState(() {
-      _animDone = true;
-      _invalidateOverlayCache();
-    });
+    _finishAnimation(); // 一帧共存交接（零空窗）
     _fitSelectedRoute();
   }
 
@@ -288,33 +331,23 @@ class _RouteCandidatesScreenState extends State<RouteCandidatesScreen>
   List<LatLng> _latLngs(PlannedRoute r) =>
       r.polyline.map((List<double> p) => LatLng(p[1], p[0])).toList();
 
-  /// 选中路线的静态绘制：每段 = 白描边（下）+ 渐变主线（上），圆角端点。
-  /// 去/返程重叠段保留 ±10m 视觉偏移（阶段 G 逻辑不变）。
-  List<Polyline> _selectedSpans(List<LatLng> pts, PlannedRoute r, int colorIndex) {
-    final Map<int, MapEntry<double, double>> offsetAt =
-        <int, MapEntry<double, double>>{};
-    for (final OverlapGroup g in r.overlaps) {
-      for (final OverlapRange rng in g.ranges) {
-        for (int i = rng.start; i < rng.end && i < pts.length; i++) {
-          offsetAt[i] = MapEntry<double, double>(rng.offset, g.refBearing);
-        }
-      }
-    }
-    final List<Polyline> out = <Polyline>[];
-    int spanNo = 0;
-    void emitSpan(List<LatLng> span) {
-      if (span.length < 2) return;
-      // 描边与主线各自连续成一条 Polyline（相邻 span 首尾点重叠 1 个，接缝圆润）
-      out.add(Polyline(
-        points: span,
+  /// 选中路线的 display 层：整条 = 白描边（下）+ 渐变细主线（上），圆角端点。
+  ///
+  /// 阶段 K：不再做 ±10m 重复段偏移拆分——canonical 折线零失真整条绘制；
+  /// 去/返重复信息由 turnAnnotations 层（两侧标注）表达（规范③④）。
+  List<Polyline> _selectedStatic(List<LatLng> pts, int colorIndex) {
+    if (pts.length < 2) return <Polyline>[];
+    return <Polyline>[
+      Polyline(
+        points: pts,
         color: RouteStyle.casingColor,
         width: RouteStyle.casingWidth,
         capType: CapType.round,
         joinType: JoinType.round,
         zIndex: RouteStyle.zCasing,
-      )..setIdForCopy('sel-casing-$colorIndex-$spanNo'));
-      out.add(Polyline(
-        points: span,
+      )..setIdForCopy('sel-casing-$colorIndex'),
+      Polyline(
+        points: pts,
         gradient: true,
         colorList: RouteStyle.gradient(colorIndex),
         color: RouteStyle.primary(colorIndex),
@@ -322,48 +355,7 @@ class _RouteCandidatesScreenState extends State<RouteCandidatesScreen>
         capType: CapType.round,
         joinType: JoinType.round,
         zIndex: RouteStyle.zCore,
-      )..setIdForCopy('sel-core-$colorIndex-$spanNo'));
-      spanNo++;
-    }
-
-    if (offsetAt.isEmpty) {
-      emitSpan(pts);
-      return out;
-    }
-    int i = 0;
-    while (i < pts.length) {
-      final MapEntry<double, double>? cur = offsetAt[i];
-      int j = i + 1;
-      while (j < pts.length && _sameOffset(offsetAt[j], cur)) {
-        j++;
-      }
-      final List<LatLng> span = pts.sublist(i, j);
-      if (cur == null || cur.key == 0) {
-        emitSpan(span);
-      } else {
-        emitSpan(_offsetSpan(span, cur.key, cur.value));
-      }
-      i = j;
-    }
-    return out;
-  }
-
-  static bool _sameOffset(MapEntry<double, double>? a, MapEntry<double, double>? b) {
-    if (a == null && b == null) return true;
-    if (a == null || b == null) return false;
-    return a.key == b.key && a.value == b.value;
-  }
-
-  List<LatLng> _offsetSpan(List<LatLng> span, double offset, double refBearing) {
-    final double perp = (refBearing + 90) * math.pi / 180;
-    final double lat0 = span[span.length ~/ 2].latitude;
-    final double dx = math.cos(perp);
-    final double dy = math.sin(perp);
-    final double dLat = dy * _offsetMeters * offset / 111320.0;
-    final double dLng =
-        dx * _offsetMeters * offset / (111320.0 * math.cos(lat0 * math.pi / 180));
-    return <LatLng>[
-      for (final LatLng p in span) LatLng(p.latitude + dLat, p.longitude + dLng),
+      )..setIdForCopy('sel-core-$colorIndex'),
     ];
   }
 
@@ -376,8 +368,8 @@ class _RouteCandidatesScreenState extends State<RouteCandidatesScreen>
         final List<LatLng> pts = _latLngs(r);
         if (pts.isEmpty) continue;
         if (i == _selected) {
-          // 动画中由生长线负责；完成后画完整静态（含去返程视觉偏移）
-          if (_animDone) statics.addAll(_selectedSpans(pts, r, i));
+          // 动画中由生长线负责；完成后 display 层画整条静态细主线
+          if (_animDone) statics.addAll(_selectedStatic(pts, i));
           continue;
         }
         statics.add(Polyline(
@@ -393,7 +385,11 @@ class _RouteCandidatesScreenState extends State<RouteCandidatesScreen>
     }
     final Set<Polyline> result = Set<Polyline>.of(_staticPolylinesCache!);
     final RoutePath? path = _path;
-    if (!_animDone && path != null && _growthCore != null && _growthCasing != null) {
+    // _keepGrowth：完成后的一帧共存（静态在下、满进度生长线在上），下一帧移除
+    if ((!_animDone || _keepGrowth) &&
+        path != null &&
+        _growthCore != null &&
+        _growthCasing != null) {
       // 生长中：复用同一 id，只改 points（插件原地 setPoints，不重建）
       final List<LatLng> drawn = path.upTo(_anim.value * path.total);
       if (drawn.length >= 2) {
@@ -421,12 +417,12 @@ class _RouteCandidatesScreenState extends State<RouteCandidatesScreen>
           zIndex: 200,
         )..setIdForCopy('start-marker'),
       };
-      // 静态完成后的方向箭头（主色 + 白描边）
+      // 静态完成后的方向箭头（小巧稀疏，主色 + 白描边）
       if (_animDone && _arrowIcon != null && _routes.isNotEmpty) {
         final List<LatLng> pts = _latLngs(_routes[_selected]);
         final double lengthM = _routeLengthMeters(pts);
         final int count = arrowCountForLengthMeters(lengthM);
-        final double spacing = count > 0 ? lengthM / (count + 1) : 2500;
+        final double spacing = count > 0 ? lengthM / (count + 1) : 3500;
         int ai = 0;
         for (final MapEntry<LatLng, double> e in arrowPointsByDistance(
             pts, spacingMeters: spacing, maxCount: count)) {
@@ -452,6 +448,29 @@ class _RouteCandidatesScreenState extends State<RouteCandidatesScreen>
         rotationParam: pos.bearing,
         iconParam: _runnerIcon,
       ));
+    }
+    // turnAnnotations 层（完成后显示）：像素级侧偏移 zoom 换算，不入静态缓存；
+    // id 稳定（ta-*）→ 相机变化时插件走原地 update，不删旧加新。
+    if (_animDone && _annotations.isNotEmpty) {
+      for (final TurnAnnotation a in _annotations) {
+        final BitmapDescriptor? icon =
+            a.kind == TurnKind.out ? _turnOutIcon : _turnBackIcon;
+        if (icon == null) continue;
+        final double mpp = metersPerPixel(_lastZoom, a.at.latitude);
+        final LatLng pos = offsetPerpendicular(
+            a.at, a.bearing, RouteStyle.turnAnnotationPxOffset * mpp, a.side);
+        result.add(Marker(
+          position: pos,
+          rotation: a.bearing,
+          icon: icon,
+          anchor: const Offset(0.5, 0.5),
+          infoWindow: InfoWindow(
+            title: a.label,
+            snippet: '约 ${(a.cumM / 1000).toStringAsFixed(2)} km 处经过',
+          ),
+          zIndex: RouteStyle.zTurnAnnotation,
+        )..setIdForCopy(a.id));
+      }
     }
     return result;
   }
@@ -488,6 +507,17 @@ class _RouteCandidatesScreenState extends State<RouteCandidatesScreen>
     _mapReady = true;
     // 地图就绪后播放当前选中的路线（初始进入即演示路线 1）。
     _startAnimation(_selected);
+  }
+
+  /// 相机移动（节流 200ms + 缩放阈值 0.25 级）：标注侧偏为屏幕像素定位，
+  /// 需按当前 zoom 把像素换算成米；地理垂线的两侧对称性对旋转天然不变，
+  /// 故只跟踪 zoom。id 稳定 → 插件原地 update。
+  void _onCameraMove(CameraPosition pos) {
+    final DateTime now = DateTime.now();
+    if (now.difference(_lastCamUpdate).inMilliseconds < 200) return;
+    if ((pos.zoom - _lastZoom).abs() < 0.25) return;
+    _lastCamUpdate = now;
+    setState(() => _lastZoom = pos.zoom);
   }
 
   void _select(int index) {
@@ -696,6 +726,7 @@ class _RouteCandidatesScreenState extends State<RouteCandidatesScreen>
                       polylines: _buildPolylines(),
                       markers: _buildMarkers(),
                       onMapCreated: _onMapCreated,
+                      onCameraMove: _onCameraMove,
                     ),
                     _buildAnimControls(),
                     if (_regenerating)

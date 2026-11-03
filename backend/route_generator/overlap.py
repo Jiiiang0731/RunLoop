@@ -1,15 +1,32 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""重复路段识别：检测闭环路线中「同一道路被两次经过（尤其反向）」的区段。
+"""重复路段识别 v2（阶段 K）：检测闭环路线中「同一道路被两次经过」的区段。
 
-只用于地图「视觉分离」，不修改真实折线、距离、GPS 或偏航计算。
+与 v1（按区间顺序两两配对，交叉口处会把两条不同的路错配）不同，v2 做
+**真实空间配对**：
+1. 网格哈希找出所有「空间距离 ≤ match_m 且反向/同向平行」的边对（保留配对链接）；
+2. 重叠边按连续性聚成 run，并在转角 > 60° 处切分（路口处两条路各成子段）；
+3. 子段之间按「配对链接的落点分布」互相认领（多数票），每个子段只配一次；
+4. 每组输出 pass 1（先经过）/ pass 2（后经过）+ 累计里程区间 + 方向关系。
+
+仅用于地图标注与视觉提示（去/返两侧标记），不修改真实折线、距离、GPS
+或偏航计算（阶段 K 规范：标注永远是视觉层）。
+
+输出（每组）：
+  {"ref_bearing": 45.0,                 # pass1 首边方位角（度）
+   "direction": "reverse"|"forward",    # 两次经过的方向关系
+   "ranges": [ {"start": i, "end": j, "offset": -1.0},   # v1 兼容（点下标，左闭右开）
+               {"start": k, "end": l, "offset": +1.0} ],
+   "passes": [ {"pass": 1, "start": i, "end": j, "cum_start_m": x, "cum_end_m": y},
+               {"pass": 2, "start": k, "end": l, "cum_start_m": x2, "cum_end_m": y2} ]}
 """
 import math
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from .geo import GeoPoint, haversine
 
 _M_PER_DEG_LAT = 110574.0
+_CORNER_SPLIT_DEG = 60.0
 
 
 def _mlng(lat: float) -> float:
@@ -25,6 +42,18 @@ def _bearing(a: GeoPoint, b: GeoPoint) -> float:
     return (math.degrees(math.atan2(y, x)) + 360) % 360
 
 
+def _ang_diff(a: float, b: float) -> float:
+    """两方位角夹角 0..180。"""
+    return abs(((a - b + 540) % 360) - 180)
+
+
+def _cumulative(polyline: List[GeoPoint]) -> List[float]:
+    cum = [0.0]
+    for i in range(1, len(polyline)):
+        cum.append(cum[-1] + haversine(polyline[i - 1], polyline[i]))
+    return cum
+
+
 def detect_overlaps(
     polyline: List[GeoPoint],
     cell_m: float = 25.0,
@@ -33,13 +62,10 @@ def detect_overlaps(
     opposite_min_deg: float = 120.0,
     min_edges: int = 4,
 ) -> List[dict]:
-    """返回重复路段的区间组。
+    """返回重复路段组（真实空间配对，含 pass 序号与累计里程）。
 
-    每组形如：
-      {"ref_bearing": 45.0,
-       "ranges": [{"start": 120, "end": 180, "offset": -1.0, "direction": "forward"},
-                  {"start": 300, "end": 360, "offset": 1.0,  "direction": "reverse"}]}
-    区间索引对应传入 polyline 的点下标（左闭右开）。
+    参数与 v1 兼容：cell_m 网格边长、index_gap 最小边下标间隔（防紧转角自配）、
+    match_m 空间匹配半径、opposite_min_deg 反向判定角、min_edges 子段最少边数。
     """
     n = len(polyline)
     if n < 8:
@@ -49,92 +75,122 @@ def detect_overlaps(
     lng0 = sum(p[0] for p in polyline) / n
     mlng = _mlng(lat0)
 
-    edges = []
+    edges: List[Optional[dict]] = [None] * (n - 1)
+    edge_list: List[dict] = []
     for i in range(n - 1):
         a, b = polyline[i], polyline[i + 1]
         if a == b:
             continue
-        mx = (a[0] + b[0]) / 2 - lng0
-        my = (a[1] + b[1]) / 2 - lat0
-        edges.append({
+        e = {
             "i": i,
-            "x": mx * mlng,
-            "y": my * _M_PER_DEG_LAT,
+            "x": ((a[0] + b[0]) / 2 - lng0) * mlng,
+            "y": ((a[1] + b[1]) / 2 - lat0) * _M_PER_DEG_LAT,
             "brg": _bearing(a, b),
-            "len": haversine(a, b),
-        })
-    if not edges:
+        }
+        edges[i] = e
+        edge_list.append(e)
+    if not edge_list:
         return []
 
     grid: Dict[Tuple[int, int], List[dict]] = {}
-    for e in edges:
-        key = (int(e["x"] // cell_m), int(e["y"] // cell_m))
-        grid.setdefault(key, []).append(e)
+    for e in edge_list:
+        grid.setdefault((int(e["x"] // cell_m), int(e["y"] // cell_m)), []).append(e)
 
-    # 标记重叠边（反向经过为主，兼顾同向重复）
-    overlap_edges: Dict[int, int] = {}  # 边下标 -> 组内方向(0 正向 / 1 反向)
-    pairs: List[Tuple[int, int]] = []
-    for e in edges:
+    # ---- 1) 配对链接：adj[i] = [(j, ang_diff), ...] ----
+    adj: Dict[int, List[Tuple[int, float]]] = {}
+    for e in edge_list:
         gx, gy = int(e["x"] // cell_m), int(e["y"] // cell_m)
         for dx in (-1, 0, 1):
             for dy in (-1, 0, 1):
                 for o in grid.get((gx + dx, gy + dy), []):
-                    if abs(o["i"] - e["i"]) < index_gap:
+                    if o["i"] == e["i"] or abs(o["i"] - e["i"]) < index_gap:
                         continue
-                    dist = math.hypot(o["x"] - e["x"], o["y"] - e["y"])
-                    if dist > match_m:
+                    if math.hypot(o["x"] - e["x"], o["y"] - e["y"]) > match_m:
                         continue
-                    diff = abs(((o["brg"] - e["brg"] + 540) % 360) - 180)  # 0..180
-                    # 反向（diff 接近 180）或同向重复（diff 接近 0）均视为重叠
-                    if diff >= opposite_min_deg:
-                        pairs.append((e["i"], o["i"]))
-                    elif diff <= 20.0:
-                        pairs.append((e["i"], o["i"]))
-
-    if not pairs:
+                    diff = _ang_diff(o["brg"], e["brg"])  # 0=同向, 180=反向
+                    # 反向（≥opposite_min_deg）或同向重复（≤20°）均视为重叠
+                    if diff >= opposite_min_deg or diff <= 20.0:
+                        adj.setdefault(e["i"], []).append((o["i"], diff))
+    if not adj:
         return []
 
-    # 按边下标分组：相邻的重叠边合并为区间
-    pair_set = set()
-    for a, b in pairs:
-        pair_set.add(a)
-        pair_set.add(b)
-    ordered = sorted(pair_set)
-
-    ranges: List[dict] = []
-    cur_start = ordered[0]
-    prev = ordered[0]
-    for idx in ordered[1:]:
-        if idx - prev <= 1:
-            prev = idx
-            continue
-        ranges.append({"start": cur_start, "end": prev + 1})
-        cur_start = idx
-        prev = idx
-    ranges.append({"start": cur_start, "end": prev + 1})
-
-    # 只保留足够长的区间（过滤噪声）
-    ranges = [r for r in ranges if (r["end"] - r["start"]) >= min_edges]
-    if not ranges:
-        return []
-
-    # 把区间两两配对：按顺序，前一半与后一半配对（同一条路去/返）
-    # 简化策略：每两个相邻区间组成一组
-    groups: List[dict] = []
-    i = 0
-    while i + 1 < len(ranges) + 1:
-        if i + 1 < len(ranges):
-            r1, r2 = ranges[i], ranges[i + 1]
-            mid = polyline[min((r1["start"] + r1["end"]) // 2, n - 1)]
-            brg = _bearing(polyline[min(r1["start"], n - 2)], polyline[min(r1["start"] + 1, n - 1)])
-            groups.append({
-                "ref_bearing": round(brg, 1),
-                "ranges": [
-                    {"start": r1["start"], "end": r1["end"], "offset": -1.0},
-                    {"start": r2["start"], "end": r2["end"], "offset": 1.0},
-                ],
-            })
-            i += 2
+    # ---- 2) 重叠边 run + 转角切分成子段 ----
+    overlap_idx = sorted(adj.keys())
+    runs: List[List[int]] = []
+    cur = [overlap_idx[0]]
+    for idx in overlap_idx[1:]:
+        if idx - cur[-1] == 1:
+            cur.append(idx)
         else:
-            i += 1
+            runs.append(cur)
+            cur = [idx]
+    runs.append(cur)
+
+    subruns: List[List[int]] = []
+    for run in runs:
+        seg = [run[0]]
+        for prev_i, i in zip(run[:-1], run[1:]):
+            ep, ec = edges[prev_i], edges[i]
+            if ep is None or ec is None or _ang_diff(ep["brg"], ec["brg"]) > _CORNER_SPLIT_DEG:
+                subruns.append(seg)
+                seg = [i]
+            else:
+                seg.append(i)
+        subruns.append(seg)
+    subruns = [s for s in subruns if len(s) >= min_edges]
+    if len(subruns) < 2:
+        return []
+
+    # 边下标 → 子段号
+    sub_of: Dict[int, int] = {}
+    for si, s in enumerate(subruns):
+        for i in s:
+            sub_of[i] = si
+
+    # ---- 3) 子段互相认领（配对链接多数票），每子段只配一次 ----
+    votes: Dict[Tuple[int, int], List[float]] = {}
+    for i, links in adj.items():
+        si = sub_of.get(i)
+        if si is None:
+            continue
+        for j, diff in links:
+            sj = sub_of.get(j)
+            if sj is None or sj == si:
+                continue
+            key = (min(si, sj), max(si, sj))
+            votes.setdefault(key, []).append(diff)
+
+    ranked = sorted(votes.items(), key=lambda kv: (-len(kv[1]), kv[0]))
+    used: set = set()
+    groups: List[dict] = []
+    cum = _cumulative(polyline)
+    for (sa, sb), diffs in ranked:
+        if sa in used or sb in used:
+            continue
+        used.add(sa)
+        used.add(sb)
+        A, B = subruns[sa], subruns[sb]
+        # pass 1 = 先经过（边下标更小）
+        first, second = (A, B) if A[0] < B[0] else (B, A)
+        median_diff = sorted(diffs)[len(diffs) // 2]
+        direction = "reverse" if median_diff >= opposite_min_deg else "forward"
+        e0 = edges[first[0]]
+        ref_bearing = e0["brg"] if e0 is not None else 0.0
+        groups.append({
+            "ref_bearing": round(ref_bearing, 1),
+            "direction": direction,
+            "ranges": [
+                {"start": first[0], "end": first[-1] + 1, "offset": -1.0},
+                {"start": second[0], "end": second[-1] + 1, "offset": +1.0},
+            ],
+            "passes": [
+                {"pass": 1, "start": first[0], "end": first[-1] + 1,
+                 "cum_start_m": round(cum[first[0]], 1),
+                 "cum_end_m": round(cum[first[-1] + 1], 1)},
+                {"pass": 2, "start": second[0], "end": second[-1] + 1,
+                 "cum_start_m": round(cum[second[0]], 1),
+                 "cum_end_m": round(cum[second[-1] + 1], 1)},
+            ],
+        })
+    groups.sort(key=lambda g: g["passes"][0]["start"])
     return groups

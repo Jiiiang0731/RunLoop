@@ -47,7 +47,7 @@ class RouteStep {
   }
 }
 
-/// 重复路段区间（仅用于视觉偏移，不改真实几何）。
+/// 重复路段区间（v1 兼容字段；阶段 K 起折线不做视觉偏移，仅供标注定位）。
 class OverlapRange {
   final int start;
   final int end;
@@ -60,21 +60,99 @@ class OverlapRange {
         end: (json['end'] as num).toInt(),
         offset: (json['offset'] as num?)?.toDouble() ?? 0,
       );
+
+  Map<String, dynamic> toJson() => <String, dynamic>{
+        'start': start,
+        'end': end,
+        'offset': offset,
+      };
+}
+
+/// 一次经过（pass）：同一道路第 N 次通过的点区间与累计里程区间（阶段 K v2）。
+class OverlapPass {
+  final int pass; // 1 = 先去程，2 = 后返程（按经过顺序）
+  final int start; // 点下标（含）
+  final int end; // 点下标（不含）
+  final double cumStartM;
+  final double cumEndM;
+
+  const OverlapPass({
+    required this.pass,
+    required this.start,
+    required this.end,
+    required this.cumStartM,
+    required this.cumEndM,
+  });
+
+  factory OverlapPass.fromJson(Map<String, dynamic> json) => OverlapPass(
+        pass: (json['pass'] as num?)?.toInt() ?? 1,
+        start: (json['start'] as num).toInt(),
+        end: (json['end'] as num).toInt(),
+        cumStartM: (json['cum_start_m'] as num?)?.toDouble() ?? 0,
+        cumEndM: (json['cum_end_m'] as num?)?.toDouble() ?? 0,
+      );
+
+  Map<String, dynamic> toJson() => <String, dynamic>{
+        'pass': pass,
+        'start': start,
+        'end': end,
+        'cum_start_m': cumStartM,
+        'cum_end_m': cumEndM,
+      };
+
+  double get lengthM => cumEndM - cumStartM;
+  int get midIndex => (start + end) ~/ 2;
 }
 
 /// 一组重复路段（同一道路被两次经过）。
 class OverlapGroup {
   final double refBearing;
+
+  /// "reverse" = 两次经过方向相反（去/返程）；"forward" = 同向重复。
+  final String direction;
   final List<OverlapRange> ranges;
 
-  const OverlapGroup({required this.refBearing, required this.ranges});
+  /// v2 字段：带 pass 序号与累计里程（旧后端数据缺省时由 ranges 派生）。
+  final List<OverlapPass> passes;
 
-  factory OverlapGroup.fromJson(Map<String, dynamic> json) => OverlapGroup(
-        refBearing: (json['ref_bearing'] as num?)?.toDouble() ?? 0,
-        ranges: ((json['ranges'] as List<dynamic>?) ?? <dynamic>[])
+  const OverlapGroup({
+    required this.refBearing,
+    required this.ranges,
+    this.direction = 'reverse',
+    this.passes = const <OverlapPass>[],
+  });
+
+  factory OverlapGroup.fromJson(Map<String, dynamic> json) {
+    final List<OverlapRange> ranges =
+        ((json['ranges'] as List<dynamic>?) ?? <dynamic>[])
             .map((dynamic e) => OverlapRange.fromJson(e as Map<String, dynamic>))
-            .toList(),
-      );
+            .toList();
+    List<OverlapPass> passes = ((json['passes'] as List<dynamic>?) ?? <dynamic>[])
+        .map((dynamic e) => OverlapPass.fromJson(e as Map<String, dynamic>))
+        .toList();
+    if (passes.isEmpty && ranges.length == 2) {
+      // 兼容 v1 数据：无累计里程，仅点区间
+      passes = <OverlapPass>[
+        OverlapPass(pass: 1, start: ranges[0].start, end: ranges[0].end,
+            cumStartM: 0, cumEndM: 0),
+        OverlapPass(pass: 2, start: ranges[1].start, end: ranges[1].end,
+            cumStartM: 0, cumEndM: 0),
+      ];
+    }
+    return OverlapGroup(
+      refBearing: (json['ref_bearing'] as num?)?.toDouble() ?? 0,
+      direction: json['direction'] as String? ?? 'reverse',
+      ranges: ranges,
+      passes: passes,
+    );
+  }
+
+  Map<String, dynamic> toJson() => <String, dynamic>{
+        'ref_bearing': refBearing,
+        'direction': direction,
+        'ranges': ranges.map((OverlapRange r) => r.toJson()).toList(),
+        'passes': passes.map((OverlapPass p) => p.toJson()).toList(),
+      };
 }
 
 /// 单条候选规划路线。
@@ -127,6 +205,10 @@ class PlannedRoute {
         'n_points': nPoints,
         'polyline': polyline,
         'recommended': recommended,
+        // 阶段 K（离线完整性）：overlaps/metrics 一并入库，
+        // 无网时标注与指标展示不丢信息。
+        'overlaps': overlaps.map((OverlapGroup g) => g.toJson()).toList(),
+        'metrics': metrics,
         'score_components': scoreComponents
             .map((ScoreItem s) => <String, dynamic>{
                   'name': s.name,
