@@ -162,6 +162,28 @@ class _RouteCandidatesScreenState extends State<RouteCandidatesScreen>
         _keepGrowth = false;
       });
     });
+    _persistSelected(); // 规范⑦：看完即入库，无网可查看/可跑
+  }
+
+  /// 规范⑦（离线完整性）：选中路线动画看完后自动全量入库
+  /// （polyline/steps/overlaps/metrics 完整 JSON）。同一 seed 只存一次，
+  /// 重播/换一批不重复膨胀；保存失败静默（「开始跑步」时还会再存一次）。
+  final Set<int> _savedSeeds = <int>{};
+
+  Future<void> _persistSelected() async {
+    if (_selected >= _routes.length) return;
+    final PlannedRoute r = _routes[_selected];
+    if (!_savedSeeds.add(r.seed)) return;
+    try {
+      await AppDatabase.instance.savePlannedRoute(
+        targetM: widget.targetM,
+        seed: r.seed,
+        distanceM: r.distanceM,
+        payload: jsonEncode(r.toJson()),
+      );
+    } catch (_) {
+      // 静默：离线保存失败不打断浏览流程。
+    }
   }
 
   Future<void> _loadIcons() async {

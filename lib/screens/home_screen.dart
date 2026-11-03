@@ -9,6 +9,7 @@ import 'package:permission_handler/permission_handler.dart';
 import '../app/config.dart';
 import '../models/location_result.dart';
 import '../models/planned_route.dart';
+import '../services/client_config_service.dart';
 import '../services/location/location_service.dart';
 import '../services/route_api/route_api_service.dart';
 import '../services/storage/database.dart';
@@ -52,6 +53,17 @@ class _HomeScreenState extends State<HomeScreen> {
     _sub = _loc.stream.listen(_onLocation);
     _initLocation();
     _checkSavedRoute();
+    _loadAnnouncement();
+  }
+
+  /// 远程配置公告（缓存命中时瞬间返回；失败沿用缓存/空——增强而非依赖）。
+  Future<void> _loadAnnouncement() async {
+    try {
+      await appClientConfig.init();
+    } catch (_) {
+      // 忽略：公告非关键路径。
+    }
+    if (mounted) setState(() {});
   }
 
   Future<void> _checkSavedRoute() async {
@@ -324,6 +336,39 @@ class _HomeScreenState extends State<HomeScreen> {
                 ),
                 const SizedBox(height: 4),
                 Text(_statusText(), style: TextStyle(color: _statusColor())),
+                // 规范⑦⑩：正式版未注入 Tailnet 地址 → 醒目说明离线可用范围
+                //（绝不静默失败，也绝不回退到局域网/localhost）。
+                if (!AppConfig.isServerConfigured) ...<Widget>[
+                  const SizedBox(height: 6),
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: Colors.red.withAlpha(18),
+                      borderRadius: BorderRadius.circular(6),
+                    ),
+                    child: const Text(
+                      '服务器地址未配置：正式版需注入 Tailscale HTTPS 地址后重新构建。'
+                      '当前仅离线功能可用（恢复上次路线 / 历史记录 / 已保存路线跑步）。',
+                      style: TextStyle(fontSize: 12, color: Colors.red),
+                    ),
+                  ),
+                ],
+                if (appClientConfig.announcement.isNotEmpty) ...<Widget>[
+                  const SizedBox(height: 6),
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: Colors.amber.withAlpha(30),
+                      borderRadius: BorderRadius.circular(6),
+                    ),
+                    child: Text(
+                      appClientConfig.announcement,
+                      style: TextStyle(fontSize: 12, color: Colors.brown[700]),
+                    ),
+                  ),
+                ],
               ],
             ),
           ),
