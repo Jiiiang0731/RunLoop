@@ -213,6 +213,23 @@ HTTPS Certificates 已开启），重跑脚本端到端通过（打印 ✅ 验�
 - 说明：这证明服务端全链路（Serve→waitress→guard→planner→高德→JSON 契约）就绪；
   D 项的「手机 + 移动数据 + App UI」部分仍需真机确认（见下表 ⏳）。
 
+**反代客户端识别修正（预演中发现并修复，2026-11-04 17:16–17:22）**：
+预演日志显示无 X-Device-Id 的请求全部记为回环哈希（`dev=12ca17b4`=127.0.0.1）——
+实测定位（临时 header 回显探针 + 最小 waitress 回显应用，用后均已清理/卸载）：
+Serve 确实发送 `X-Forwarded-For: <客户端Tailnet IP>`，但 **waitress 默认丢弃
+X-Forwarded-\***（防伪造安全默认）。修复：`serve.py` 显式
+`trusted_proxy="127.0.0.1", trusted_proxy_count=1`（安全前提：服务仅监听回环，
+能提交转发头的只有本机 Serve 代理）+ `server.py _device_key()` 支持回环来源
+XFF 兜底。三场景实测（400 快速路径，零配额成本）：
+| 场景 | 期望 dev 哈希 | 实测 |
+| --- | --- | --- |
+| 经 Serve（无设备头） | `25db8851` = sha256(100.64.0.1)[:8] | ✅ |
+| 直连回环 + 伪 XFF 9.9.9.9 | `1a22570d`（本机进程可改桶——本机进程本就拥有全权，可接受） | ✅ |
+| 直连回环无 XFF | `12ca17b4` = 127.0.0.1 回退 | ✅ |
+新增 2 项离线单测（XFF 分桶/非回环 XFF 不可信），Python 套件 **125 全绿**。
+效果：手机 App（始终带 X-Device-Id）按设备配额不受影响；浏览器等无设备头
+客户端也能按真实 Tailnet IP 正确分桶，不再合并成回环一个桶。
+
 **地址纪律**：`https://your-device.your-tailnet.ts.net` 全程来自 `tailscale status --json`
 实测读取，无任何手工编造。
 
@@ -242,7 +259,7 @@ HTTPS Certificates 已开启），重跑脚本端到端通过（打印 ✅ 验�
 | 投影窗口 | 250m | `AppConfig.matchWindowM` | 同上 |
 | 距离容差 | ±500m 绝对 | 服务端 clamp [100,500] | 决策①：永不重新包装 |
 | 生成预算 | per_seed 240 / 单次 ≤800（服务端 clamp ≤1500） | calibrator / server | 决策②质量优先 |
-| 限流 | generate 8/10min、80/天；pois 30/h（按设备哈希） | `guard.DEFAULT_RULES` | 429 + Retry-After |
+| 限流 | generate 8/10min、80/天；pois 30/h | `guard.DEFAULT_RULES` | 429 + Retry-After；桶键 = X-Device-Id 优先，否则 waitress trusted_proxy 还原的真实 Tailnet IP（见 §6） |
 | 熔断 | 连续 3 次节流 → 开路 120s，半开单探测 | `guard.CircuitBreaker` | 503 UPSTREAM_QUOTA |
 | 并发闸 | generate 1 / pois 2（可调） | `guard.ConcurrencyGate` | 429 SERVER_BUSY |
 | 远程配置 | `/api/client-config`，App 缓存 24h | server + client_config_service | 增强而非依赖 |

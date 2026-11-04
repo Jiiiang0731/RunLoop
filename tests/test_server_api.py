@@ -143,6 +143,47 @@ class TestGuards(ServerApiBase):
                    headers={"X-Device-Id": "other-device"})
         self.assertEqual(r2.status_code, 400)
 
+    def test_xff_client_key_behind_proxy(self):
+        """Tailscale Serve 反代（remote_addr=回环）时按 XFF 首址分桶。"""
+        guard_mod.DEFAULT_RULES = {"/api/route/generate": [(60, 2)]}
+        app = server_mod.create_app()
+        app.testing = True
+        client = app.test_client()
+        payload = {"origin": {"lng": 114.087, "lat": 30.536}, "target_m": 999}
+        h_a = {"X-Forwarded-For": "100.64.0.2"}
+        self.assertEqual(_post(client, "/api/route/generate", payload, headers=h_a).status_code, 400)
+        self.assertEqual(_post(client, "/api/route/generate", payload, headers=h_a).status_code, 400)
+        r = _post(client, "/api/route/generate", payload, headers=h_a)
+        self.assertEqual(r.status_code, 429)          # 同一 Tailnet IP 触发配额
+        r2 = _post(client, "/api/route/generate", payload,
+                   headers={"X-Forwarded-For": "100.64.0.1"})
+        self.assertEqual(r2.status_code, 400)          # 不同 XFF IP 不受牵连
+        r3 = _post(client, "/api/route/generate", payload,
+                   headers={"X-Forwarded-For": "100.64.0.2",
+                            "X-Device-Id": "fresh-device"})
+        self.assertEqual(r3.status_code, 400)          # X-Device-Id 优先于 XFF
+
+    def test_xff_ignored_from_non_loopback(self):
+        """非回环来源的 XFF 不可信（防御纵深）：按 remote_addr 分桶。"""
+        guard_mod.DEFAULT_RULES = {"/api/route/generate": [(60, 2)]}
+        app = server_mod.create_app()
+        app.testing = True
+        client = app.test_client()
+        payload = json.dumps({"origin": {"lng": 114.087, "lat": 30.536}, "target_m": 999})
+        base = {"REMOTE_ADDR": "10.1.2.3"}
+        for xff in ("100.64.0.2", "100.64.0.1"):
+            r = client.post("/api/route/generate", data=payload,
+                            content_type="application/json",
+                            headers={"X-Forwarded-For": xff},
+                            environ_base=base)
+            self.assertEqual(r.status_code, 400)
+        # 第三个「伪装的 XFF」同样计入 10.1.2.3 的桶 → 429
+        r = client.post("/api/route/generate", data=payload,
+                        content_type="application/json",
+                        headers={"X-Forwarded-For": "8.8.8.8"},
+                        environ_base=base)
+        self.assertEqual(r.status_code, 429)
+
     def test_breaker_open_503(self):
         for _ in range(3):
             self.state.breaker.record_throttle()

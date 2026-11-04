@@ -49,6 +49,15 @@ def main():
         connection_limit=32,
         max_request_body_size=256 * 1024,
         ident="RunLoopAPI/" + SERVICE_VERSION,
+        # Tailscale Serve 反代与后端同机（连接必来自 127.0.0.1）。waitress
+        # 默认丢弃 X-Forwarded-*（防伪造），显式信任回环代理后，REMOTE_ADDR
+        # 会被还原为真实 Tailnet 客户端 IP —— 每客户端限流/配额因此对
+        # 「无 X-Device-Id 的请求」也能正确分桶（有设备头时优先设备头）。
+        # 安全前提：服务仅监听回环，能提交转发头的只有本机 Serve 代理。
+        trusted_proxy="127.0.0.1",
+        trusted_proxy_count=1,
+        trusted_proxy_headers={"x-forwarded-for", "x-forwarded-proto",
+                               "x-forwarded-host"},
     )
 
 

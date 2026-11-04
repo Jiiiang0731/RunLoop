@@ -123,8 +123,20 @@ def create_app() -> Flask:
     poi_lock = threading.Lock()
 
     def _device_key() -> str:
-        return (request.headers.get("X-Device-Id")
-                or request.remote_addr or "anon")
+        dev = request.headers.get("X-Device-Id")
+        if dev:
+            return dev
+        addr = request.remote_addr or ""
+        # Tailscale Serve 反代后 remote_addr 恒为回环；用 X-Forwarded-For 还原
+        # 真实 Tailnet 客户端 IP，保证每客户端配额不因反代合并成一个桶。
+        # 安全前提：服务端仅监听 127.0.0.1，能设置 XFF 的只有本机 Serve 代理，
+        # 外网无法伪造（直连者必然来自回环本身）。
+        if addr in ("127.0.0.1", "::1"):
+            xff = request.headers.get("X-Forwarded-For", "")
+            first = xff.split(",")[0].strip() if xff else ""
+            if first:
+                return first
+        return addr or "anon"
 
     @app.before_request
     def _mark_t0():
