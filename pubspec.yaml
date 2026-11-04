@@ -43,6 +43,11 @@ dependencies:
   path: ^1.9.1
   shared_preferences: ^2.5.6
   http: ^1.6.0
+  # 阶段 L：普通话语音导航（系统 TTS，无付费语音 API）。
+  # 4.2.5：isLanguageInstalled（中文语音数据缺失检测）、
+  # setAudioAttributesForNavigation（导航音频属性/焦点/蓝牙路由）、
+  # setQueueMode（排队不积压）、speak(focus:) 均满足规范 2.5/2.6。
+  flutter_tts: ^4.2.5
 
 dev_dependencies:
   flutter_test:
