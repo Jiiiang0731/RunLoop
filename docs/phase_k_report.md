@@ -230,6 +230,22 @@ XFF 兜底。三场景实测（400 快速路径，零配额成本）：
 效果：手机 App（始终带 X-Device-Id）按设备配额不受影响；浏览器等无设备头
 客户端也能按真实 Tailnet IP 正确分桶，不再合并成回环一个桶。
 
+**App 全部依赖端点的 Tailnet 实测（2026-11-04 17:2x，D 项服务端侧全就绪）**：
+| 端点 | 结果 |
+| --- | --- |
+| `GET /api/health` | 200 / 1.07s，v0.5（首测）|
+| `GET /api/client-config` | 200 / **0.046s**，config 信封完整（max_api_calls=800、pois 参数、version）——App 远程配置链路就绪 |
+| `POST /api/route/generate` | 200 / 14.76s（5km，55 次真实调用，ok=1/1）；200 / 37.64s（15km 长请求，143 次调用，达标 score 51.0）；400 校验路径正常 |
+| `POST /api/route/pois` | 200 / **0.27s**，真实 POI 返回（cum=1049.4m 处「小村人家」），日志 `dev=b42f74ac samples=1 throttled=N` |
+
+**手机连通性预检（PC 侧观测）**：`tailscale ping your-phone.tail120f1d.ts.net` →
+pong **via DERP(nue) 中继 528–601ms**（NAT 打洞未成但中继兜底连通）——B/C/D
+经移动数据可工作的通道级证据；生成请求为单次长请求，中继延迟对 30–45s 的
+生成过程影响可忽略。
+**电源现状（只读查询，未做任何修改）**：AC 待机超时 = 2 小时（0x1c20）。
+用户测试期间保持活跃即可；如需长期不待机，等用户「同意防睡眠」后运行
+`set_awake.ps1`（仅 AC 一项，可恢复）。
+
 **地址纪律**：`https://your-device.your-tailnet.ts.net` 全程来自 `tailscale status --json`
 实测读取，无任何手工编造。
 
