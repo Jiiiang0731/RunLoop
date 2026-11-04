@@ -202,6 +202,17 @@ HTTPS Certificates 已开启），重跑脚本端到端通过（打印 ✅ 验�
 诊断中 `tailscale cert` 在仓库根落盘的 .crt/.key 已**立即删除**（git 全程干净，
 密钥红线零触碰）。
 
+**D 项服务端侧预演（PC 经 Tailnet HTTPS 全链路，2026-11-04 17:06/17:12）**：
+- 短请求：`POST /api/route/generate`（5km 蔡店，budget 120）→ **HTTP 200 / 14.76s**；
+  服务端日志 `dev=b42f74ac ... -> 200 14689ms extra=target=5000 calls=55 ok=1/1
+  origin=114.09,30.54 throttled=N`——设备哈希、坐标脱敏、真实 55 次高德调用、候选 1/1 达标；
+- 长请求：15km budget 200 → **HTTP 200 / 37.64s**，143 次调用，候选达标（within=true，
+  score 51.0，33 条 steps，1 组 overlaps）——与昨日回归 A-15km（51.0）一致；
+  **Tailscale Serve 代理对数十秒级长生成无超时问题**；
+- `/api/health` served 计数正确累加（=2）。
+- 说明：这证明服务端全链路（Serve→waitress→guard→planner→高德→JSON 契约）就绪；
+  D 项的「手机 + 移动数据 + App UI」部分仍需真机确认（见下表 ⏳）。
+
 **地址纪律**：`https://your-device.your-tailnet.ts.net` 全程来自 `tailscale status --json`
 实测读取，无任何手工编造。
 
