@@ -18,7 +18,22 @@ void main() {
     expect(s.announceDistanceM, 50);
     expect(s.speechRate, 0.5);
     expect(s.volume, 1.0);
+    expect(s.mapZoom, 18.5); // 阶段 L2：导航缩放默认 18.5
     expect(s.loaded, isTrue);
+  });
+
+  test('地图缩放持久化 + clamp（阶段 L2 规范二.B）', () async {
+    final NavSettings s = NavSettings.instance;
+    await s.load();
+    await s.setMapZoom(19.0);
+    NavSettings.debugResetForTest();
+    await NavSettings.instance.load();
+    expect(NavSettings.instance.mapZoom, 19.0);
+
+    await NavSettings.instance.setMapZoom(99);
+    expect(NavSettings.instance.mapZoom, 20.0);
+    await NavSettings.instance.setMapZoom(1);
+    expect(NavSettings.instance.mapZoom, 16.5);
   });
 
   test('设置持久化：写入后重新加载保持', () async {

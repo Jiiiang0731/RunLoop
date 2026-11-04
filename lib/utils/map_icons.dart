@@ -131,6 +131,24 @@ Future<BitmapDescriptor> createRunnerIcon(Color color) async {
   return BitmapDescriptor.fromBytes(data!.buffer.asUint8List());
 }
 
+/// 平移浏览模式的位置圆点（阶段 L2）：**无方向语义**——真机证实高德
+/// Marker 会随地图 bearing 旋转，方向无法保证；跟随时方向由屏幕固定
+/// 箭头（RunnerArrow）表达，平移时只显示位置点，宁可不指也不错指。
+Future<BitmapDescriptor> createPositionDotIcon(Color color) async {
+  const double size = 40;
+  final ui.PictureRecorder recorder = ui.PictureRecorder();
+  final Canvas canvas = Canvas(recorder);
+  const Offset c = Offset(size / 2, size / 2);
+  canvas.drawCircle(c, size / 2 - 4, Paint()..color = const Color(0x33000000));
+  canvas.drawCircle(c, size / 2 - 6, Paint()..color = Colors.white);
+  canvas.drawCircle(c, size / 2 - 10, Paint()..color = color);
+  final ui.Image image =
+      await recorder.endRecording().toImage(size.toInt(), size.toInt());
+  final ByteData? data = await image.toByteData(format: ui.ImageByteFormat.png);
+  image.dispose();
+  return BitmapDescriptor.fromBytes(data!.buffer.asUint8List());
+}
+
 /// a→b 的方位角（度，正北为 0，顺时针）。
 double bearingDeg(LatLng a, LatLng b) {
   final double lat1 = a.latitude * math.pi / 180;

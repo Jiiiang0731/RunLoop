@@ -9,6 +9,7 @@ import '../services/nav/tts_service.dart';
 /// - 转弯提前提示距离（默认 50m）；
 /// - 音量、语速调节；
 /// - 试听按钮（真实 TTS 播放，与导航同一引擎与音频属性）；
+/// - 导航地图缩放档位（阶段 L2：18.0/18.5/19.0 真机对比用）；
 /// - 中文 TTS 可用性自动诊断：缺引擎/缺中文语音数据时给出明确指引，
 ///   绝不静默失败（规范 2.5）。
 class SettingsScreen extends StatefulWidget {
@@ -25,6 +26,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _diagnosing = true;
 
   static const List<double> _distanceChoices = <double>[30, 50, 80, 100];
+  static const List<double> _zoomChoices = <double>[18.0, 18.5, 19.0];
 
   @override
   void initState() {
@@ -125,6 +127,31 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     label: Text('${d.toStringAsFixed(0)} m'),
                     selected: _settings.announceDistanceM == d,
                     onSelected: (_) => _settings.setAnnounceDistanceM(d),
+                  ),
+              ],
+            ),
+            const Divider(height: 32),
+            // ---- 导航地图缩放（阶段 L2 规范二.B）----
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: Text('导航地图缩放：${_settings.mapZoom.toStringAsFixed(1)}',
+                  style: const TextStyle(fontWeight: FontWeight.w600)),
+            ),
+            const Padding(
+              padding: EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+              child: Text('跑步开始后的地图放大级别。建议在真机上对比 18.0 / 18.5 / 19.0 '
+                  '的实际效果后选定；跑步中双指缩放会临时覆盖此值。',
+                  style: TextStyle(fontSize: 12, color: Colors.grey)),
+            ),
+            const SizedBox(height: 4),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+              children: <Widget>[
+                for (final double z in _zoomChoices)
+                  ChoiceChip(
+                    label: Text(z.toStringAsFixed(1)),
+                    selected: _settings.mapZoom == z,
+                    onSelected: (_) => _settings.setMapZoom(z),
                   ),
               ],
             ),

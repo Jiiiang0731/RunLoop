@@ -10,6 +10,8 @@ import '../models/km_split.dart';
 import '../models/planned_route.dart';
 import '../models/run_record.dart';
 import '../models/track_point.dart';
+import '../services/nav/compass_source.dart';
+import '../services/nav/follow_camera.dart';
 import '../services/nav/foreground_run_service.dart';
 import '../services/nav/heading_controller.dart';
 import '../services/nav/nav_announcer.dart';
@@ -21,15 +23,19 @@ import '../utils/map_icons.dart';
 import '../utils/route_path.dart';
 import '../utils/route_style.dart';
 import '../widgets/countdown_overlay.dart';
+import '../widgets/runner_arrow.dart';
 import 'run_summary_screen.dart';
 
 /// 地图朝向模式（阶段 L 模块 D）：预览固定北朝上；跑步开始后默认 Heading-Up。
 enum MapOrientation { headingUp, northUp }
 
-/// 跑步中页面（阶段 L 全面升级）：
+/// 跑步中页面（阶段 L 全面升级；阶段 L2 Heading-Up 重构）：
 /// - 开始前三秒环形倒计时，GO 时刻才启动计时（模块 C）；
-/// - Heading-Up 相机：跑者居中、前进方向朝上、旋转地图而非图标，
-///   GPS course 优先 + 平滑 + 静止冻结 + 手动平移后一键回中（模块 D）；
+/// - 导航相机（L2 重构）：GO 后自动放大至导航构图；跑者=屏幕中央固定
+///   箭头（永不随地图旋转）；地图 bearing=平滑航向 ⇒ 前进方向恒在屏幕
+///   正上方；目标位姿 1Hz 更新 + 20Hz 插值渲染（连续平移/旋转/缩放，
+///   无逐秒跳动）；GPS course → 路线切线 → 静止时磁力计辅助 → 冻结；
+///   手动平移解除跟随（一键回中）、捏合缩放采纳新级别（模块 D/规范一二三）；
 /// - 语音导航：真实 steps + 窗口化匹配里程驱动播报（模块 A）；
 /// - 每公里分段：完成时轻提示 + 播报（模块 B）；
 /// - 视觉融合：已跑段低权重蓝灰、剩余段渐变主线、GPS 橙轨在上（模块 E）；
@@ -52,12 +58,34 @@ class _RunScreenState extends State<RunScreen> {
   /// 投影搜索窗口（米）：只在上次里程 ±250m 内找最近点，避免吸附到重叠的另一条腿。
   static const double _matchWindowM = AppConfig.matchWindowM;
 
-  /// 跑步跟随缩放（比预览更近，看清脚下路线）。
-  static const double _runZoom = 17.0;
-
   final RunRecorder _recorder = RunRecorder();
   final FlutterTtsEngine _tts = FlutterTtsEngine();
   final HeadingController _heading = HeadingController();
+
+  /// 磁力计辅助源（阶段 L2 规范四.5：仅静止且无路线方向时采纳）。
+  final CompassSource _compass = CompassSource();
+
+  /// 20Hz 相机插值模型（阶段 L2：目标位姿 1Hz 更新，渲染位姿每帧逼近，
+  /// 平移/旋转/缩放全部连续平滑——替代旧的 1Hz animated moveCamera 跳动）。
+  final FollowCamera _cam = FollowCamera();
+  Timer? _camTimer;
+
+  /// 最近一次「程序下发」的相机位姿：用于在 onCameraMoveEnd 中区分
+  /// 用户手势（平移→解除跟随；捏合缩放→采纳新级别）与自己下发的移动。
+  LatLng? _lastCommandedTarget;
+  double? _lastCommandedZoom;
+
+  /// 用户捏合缩放后采纳的基础缩放（本次跑步内覆盖设置值）。
+  double? _zoomOverride;
+
+  /// 手势让位（阶段 L2）：用户正在拖动/捏合时暂停 20Hz 下发，
+  /// 避免「手指 vs 跟随」打架；onCameraMoveEnd 后恢复。
+  bool _gestureHold = false;
+
+  /// 程序动画（GO 过渡/回中/转向）结束时刻（毫秒）：窗口内的相机事件
+  /// 是自己的动画，不判为手势。
+  double _animUntilMs = 0;
+
   late final NavAnnouncer _announcer = NavAnnouncer(
     engine: _tts,
     config: _SettingsVoiceConfig(),
@@ -73,8 +101,6 @@ class _RunScreenState extends State<RunScreen> {
   AMapController? _controller;
   bool _followCamera = true;
   MapOrientation _orientation = MapOrientation.headingUp;
-  LatLng? _lastCameraTarget;
-  double? _lastCameraBearing;
   double? _lastHeadingAtMs; // 方向平滑的 dt 计算（毫秒时间戳）
 
   // ---- 路线与匹配 ----
@@ -94,6 +120,7 @@ class _RunScreenState extends State<RunScreen> {
 
   BitmapDescriptor? _runnerIcon;
   BitmapDescriptor? _startIcon;
+  BitmapDescriptor? _dotIcon;
 
   @override
   void initState() {
@@ -105,7 +132,8 @@ class _RunScreenState extends State<RunScreen> {
       _plannedPath = RoutePath.fromPoints(_plannedPts);
     }
     // 注意：不在这里 start()——倒计时 GO 时刻才开始计时（规范 4.2）。
-    _recorder.addListener(_onRecorderTick);
+    // 相机目标由 build 中的 _onMatched 驱动（1Hz），渲染由 _camTimer（20Hz）驱动。
+    _compass.start();
     _loadIcons();
     _initVoice();
   }
@@ -129,7 +157,8 @@ class _RunScreenState extends State<RunScreen> {
   @override
   void dispose() {
     _toastTimer?.cancel();
-    _recorder.removeListener(_onRecorderTick);
+    _camTimer?.cancel(); // 相机定时器随页面消亡，无残留
+    _compass.dispose();
     if (_started) {
       _announcer.onEnd(); // 结束语音立即停止并清空队列
       if (!_ending) _recorder.end();
@@ -146,10 +175,13 @@ class _RunScreenState extends State<RunScreen> {
       final BitmapDescriptor runner =
           await createRunnerIcon(const Color(0xFF1565C0));
       final BitmapDescriptor start = await createStartIcon();
+      final BitmapDescriptor dot =
+          await createPositionDotIcon(const Color(0xFF1565C0));
       if (mounted) {
         setState(() {
           _runnerIcon = runner;
           _startIcon = start;
+          _dotIcon = dot;
         });
       }
     } catch (_) {
@@ -160,12 +192,15 @@ class _RunScreenState extends State<RunScreen> {
   // ---------- 倒计时（模块 C） ----------
 
   /// GO 时刻：跑步计时从这里开始（规范 4.2#2），倒计时不计入成绩。
+  /// 同时相机从「预览构图」切换到「实时导航构图」（规范二.B：自动放大、
+  /// 跑者居中、前进方向朝上）。
   void _onCountdownGo() {
     if (_started) return;
     _started = true;
     _recorder.start();
     _announcer.attach(widget.plannedRoute?.steps ?? const <RouteStep>[]);
     unawaited(_startForeground());
+    _beginNavCamera();
   }
 
   Future<void> _startForeground() async {
@@ -183,68 +218,156 @@ class _RunScreenState extends State<RunScreen> {
     Navigator.pop(context);
   }
 
-  // ---------- 相机与方向（模块 D） ----------
+  // ---------- 相机与方向（模块 D，阶段 L2 重构） ----------
+  //
+  // 架构：目标位姿 1Hz 更新（_onMatched → FollowCamera.setGoal），
+  // 渲染位姿 20Hz 插值（_camTimer → FollowCamera.tick → moveCamera 非动画）。
+  // 方向 = HeadingController 仲裁（GPS course → 路线切线 → 静止时磁力计辅助
+  // → 冻结）；地图 bearing = 平滑航向 ⇒ 前进方向永远在屏幕正上方；
+  // 跑者 = 屏幕中央固定箭头（RunnerArrow），不用会随地图旋转的 Marker。
 
-  /// 记录器通知（约 1Hz）：仅在跟随时更新相机；带位置/角度死区防抖，
-  /// 不满足阈值就不调用 moveCamera（规范 5.2#4）。
-  void _onRecorderTick() {
-    if (!mounted || _controller == null || !_followCamera || !_started) return;
-    final List<TrackPoint> pts = _recorder.points;
-    if (pts.isEmpty) return;
-    final TrackPoint last = pts.last;
-    final LatLng target = LatLng(last.latitude, last.longitude);
-    final double camBearing = _orientation == MapOrientation.headingUp
-        ? (_heading.heading ?? _lastCameraBearing ?? 0)
-        : 0;
-    if (_lastCameraTarget != null) {
-      final double moved = haversineMeters(_lastCameraTarget!, target);
-      final double rot = HeadingController.shortestDelta(_lastCameraBearing ?? camBearing, camBearing).abs();
-      if (moved < 1.5 && rot < 2) return; // 死区：忽略 GPS 抖动
+  /// 基础缩放：用户捏合过 → 采纳值；否则用设置页档位（默认 18.5）。
+  double get _baseZoom => _zoomOverride ?? NavSettings.instance.mapZoom;
+
+  /// 目标缩放：临近转弯自动放大一档，看清路口（规范二.B「结合下一个
+  /// 路口的距离合理调整」）；远离转弯回到基础档。
+  double _zoomGoalFor(double? nextTurnDistM) {
+    double bonus = 0;
+    if (nextTurnDistM != null) {
+      if (nextTurnDistM < 80) {
+        bonus = 0.4;
+      } else if (nextTurnDistM < 250) {
+        bonus = 0.2;
+      }
     }
-    _controller!.moveCamera(
-      CameraUpdate.newCameraPosition(
-        CameraPosition(
-          target: target,
-          zoom: _runZoom,
-          bearing: camBearing, // 旋转地图（2D 顶视，tilt=0，不强制 3D）
-          tilt: 0,
-        ),
-      ),
-      animated: true,
-    );
-    _lastCameraTarget = target;
-    _lastCameraBearing = camBearing;
+    return (_baseZoom + bonus).clamp(16.5, 20.0);
   }
 
-  /// 相机移动结束：与跑者距离过远 ⇒ 判定为用户手动平移 → 暂停跟随，
-  /// 显示「回到跑者」按钮（规范 5.2#6）。
-  void _onCameraMoveEnd(CameraPosition pos) {
-    final List<TrackPoint> pts = _recorder.points;
-    if (pts.isEmpty) return;
-    final LatLng runner = LatLng(pts.last.latitude, pts.last.longitude);
-    if (haversineMeters(pos.target, runner) > 40 && _followCamera) {
-      if (mounted) setState(() => _followCamera = false);
+  /// GO 瞬间：一次 800ms 动画从预览构图飞到导航构图（自动放大 + 对齐
+  /// 出发方向），随后启动 20Hz 跟随定时器。
+  void _beginNavCamera() {
+    final RoutePath? path = _plannedPath;
+    double initialBearing = _heading.heading ?? 0;
+    if (_heading.heading == null && path != null && path.total > 5) {
+      // 尚无 GPS 航向：先用路线出发方向的切线，起步即对齐（体验细节）
+      initialBearing = path.at(0).bearing;
     }
-  }
+    final List<TrackPoint> pts = _recorder.points;
+    final LatLng target = pts.isNotEmpty
+        ? LatLng(pts.last.latitude, pts.last.longitude)
+        : (_plannedPts.isNotEmpty ? _plannedPts.first : const LatLng(30.536395, 114.087279));
+    final double zoom = _zoomGoalFor(null);
+    final double bearing =
+        _orientation == MapOrientation.headingUp ? initialBearing : 0;
 
-  void _recenter() {
-    setState(() {
-      _followCamera = true;
-      _lastCameraTarget = null;
-      _lastCameraBearing = null;
+    _cam.snap(target: target, bearing: bearing, zoom: zoom);
+    _issueCamera(target, bearing, zoom, animated: true, duration: 800);
+
+    // 等 GO 动画基本结束再启动逐帧跟随，避免两种移动互相打架。
+    _camTimer?.cancel();
+    _camTimer = Timer(const Duration(milliseconds: 850), () {
+      if (!mounted || !_started || _ending) return;
+      _camTimer = Timer.periodic(
+          const Duration(milliseconds: 50), (_) => _camTick());
     });
-    _onRecorderTick();
   }
 
+  void _issueCamera(LatLng target, double bearing, double zoom,
+      {required bool animated, int duration = 250}) {
+    _lastCommandedTarget = target;
+    _lastCommandedZoom = zoom;
+    if (animated) {
+      _animUntilMs = DateTime.now().millisecondsSinceEpoch + duration + 250;
+    }
+    _controller?.moveCamera(
+      CameraUpdate.newCameraPosition(
+        CameraPosition(target: target, zoom: zoom, bearing: bearing, tilt: 0),
+      ),
+      animated: animated,
+      duration: duration,
+    );
+  }
+
+  /// 20Hz 渲染帧：向目标位姿指数逼近；死区内 tick 返回 null → 不下发。
+  /// 手势期间让位（不与用户手指抢相机）。
+  void _camTick() {
+    if (!mounted) return;
+    if (_controller == null || !_started || !_followCamera) return;
+    if (_gestureHold) return;
+    final FollowCameraStep? s = _cam.tick(0.05);
+    if (s == null) return;
+    _issueCamera(s.position, s.bearing, s.zoom, animated: false);
+  }
+
+  /// 相机移动中回调：区分「自己的动画/下发」与「用户手势」。
+  /// 手势判定：不在程序动画窗口内，且事件位姿明显偏离最近下发值。
+  void _onCameraMove(CameraPosition pos) {
+    if (!_started || !_followCamera || _gestureHold) return;
+    final double nowMs = DateTime.now().millisecondsSinceEpoch.toDouble();
+    if (nowMs < _animUntilMs) return; // GO 过渡/回中动画进行中
+    final LatLng? cmdT = _lastCommandedTarget;
+    final double? cmdZ = _lastCommandedZoom;
+    final bool farTarget = cmdT != null && haversineMeters(pos.target, cmdT) > 8;
+    final bool zoomDelta = cmdZ != null && (pos.zoom - cmdZ).abs() > 0.25;
+    if (farTarget || zoomDelta) {
+      _gestureHold = true; // 用户正在拖动/捏合：暂停下发，等 MoveEnd 决策
+    }
+  }
+
+  /// 相机移动结束回调：区分「用户手势」与「程序下发」。
+  /// - 目标点远离程序下发值 >25m ⇒ 用户平移 → 解除跟随，出现回中按钮；
+  /// - 缩放差 >0.25 ⇒ 用户捏合 → 采纳为新基础级别（跟随不解除）；
+  /// - 其余（含自己每帧下发的移动）忽略。
+  void _onCameraMoveEnd(CameraPosition pos) {
+    _gestureHold = false;
+    if (!_started || !_followCamera) return;
+    final LatLng? cmdT = _lastCommandedTarget;
+    if (cmdT != null && haversineMeters(pos.target, cmdT) > 25) {
+      if (mounted) setState(() => _followCamera = false);
+      return;
+    }
+    final double? cmdZ = _lastCommandedZoom;
+    if (cmdZ != null && (pos.zoom - cmdZ).abs() > 0.25) {
+      _zoomOverride = pos.zoom.clamp(16.5, 20.0);
+      _cam.snap(zoom: pos.zoom); // 插值模型与真实相机对齐，防「回拉打架」
+    }
+    // 双指旋转已禁用（rotateGesturesEnabled=false），朝向只由模式切换控制。
+  }
+
+  /// 回中：立即吸附到跑者 + 短动画归位（规范 5.2#6「一键恢复跟随」）。
+  void _recenter() {
+    setState(() => _followCamera = true);
+    _gestureHold = false;
+    final List<TrackPoint> pts = _recorder.points;
+    if (pts.isEmpty) return;
+    final LatLng t = LatLng(pts.last.latitude, pts.last.longitude);
+    final double b = _orientation == MapOrientation.headingUp
+        ? (_heading.heading ?? _cam.bearing ?? 0)
+        : 0;
+    final double z = _cam.zoom ?? _zoomGoalFor(null);
+    _cam.snap(target: t, bearing: b, zoom: z);
+    _issueCamera(t, b, z, animated: true, duration: 400);
+  }
+
+  /// 切换「行进方向朝上 / 正北朝上」：地图一次短动画转到新朝向，
+  /// 插值模型同步吸附（避免 20Hz 逼近走长弧）。
   void _toggleOrientation() {
     setState(() {
       _orientation = _orientation == MapOrientation.headingUp
           ? MapOrientation.northUp
           : MapOrientation.headingUp;
-      _lastCameraTarget = null;
-      _lastCameraBearing = null;
     });
-    _onRecorderTick();
+    if (!_started || !_followCamera) return; // 预览阶段仅切换箭头渲染
+    _gestureHold = false;
+    final List<TrackPoint> pts = _recorder.points;
+    if (pts.isEmpty) return;
+    final LatLng t = LatLng(pts.last.latitude, pts.last.longitude);
+    final double b = _orientation == MapOrientation.headingUp
+        ? (_heading.heading ?? _cam.bearing ?? 0)
+        : 0;
+    final double z = _cam.zoom ?? _zoomGoalFor(null);
+    _cam.snap(target: t, bearing: b, zoom: z);
+    _issueCamera(t, b, z, animated: true, duration: 400);
   }
 
   // ---------- 暂停 / 继续 / 结束 ----------
@@ -306,7 +429,7 @@ class _RunScreenState extends State<RunScreen> {
     }
     if (!_started || pts.isEmpty) return;
 
-    // ---- 方向：GPS course 优先，路线切线兜底，静止冻结 ----
+    // ---- 方向：GPS course 优先 → 路线切线兜底 → 静止时磁力计辅助 → 冻结 ----
     final TrackPoint last = pts.last;
     final double nowMs = DateTime.now().millisecondsSinceEpoch.toDouble();
     final double dt = _lastHeadingAtMs == null
@@ -321,8 +444,25 @@ class _RunScreenState extends State<RunScreen> {
       routeBearing: (path != null && proj != null && !offRoute)
           ? path.at(proj.alongM).bearing
           : null,
+      // 偏航时不给路线方向：地图按真实运动方向转，绝不强制拉回路线视角
+      compassBearing: _compass.heading,
       dtSeconds: dt,
     );
+
+    // ---- 相机目标位姿（20Hz 定时器负责平滑跟随，此处只设目标） ----
+    if (_followCamera) {
+      final double camBearing = _orientation == MapOrientation.headingUp
+          ? (_heading.heading ?? _cam.bearing ?? 0)
+          : 0;
+      final double? turnDist = (proj != null && !offRoute)
+          ? _nextTurnHint(proj.alongM)?.distM
+          : null;
+      _cam.setGoal(
+        target: LatLng(last.latitude, last.longitude), // GPS 真实坐标
+        bearing: camBearing,
+        zoom: _zoomGoalFor(turnDist),
+      );
+    }
 
     // ---- 语音导航 ----
     _announcer.onPosition(
@@ -426,24 +566,14 @@ class _RunScreenState extends State<RunScreen> {
         zIndex: 200,
       )..setIdForCopy('run-start'));
     }
-    if (trackPts.isNotEmpty) {
-      // Heading-Up：地图已旋转到前进方向朝上 → 图标不转（始终指屏幕上方）；
-      // 北朝上：图标按平滑后的方向旋转（无方向时退回轨迹切线）。
-      double rotation = 0;
-      if (_orientation == MapOrientation.northUp) {
-        if (_heading.heading != null) {
-          rotation = _heading.heading!;
-        } else if (trackPts.length >= 2) {
-          final LatLng a = trackPts[trackPts.length - 2];
-          final LatLng b = trackPts.last;
-          if (haversineMeters(a, b) > 3) rotation = bearingDeg(a, b);
-        }
-      }
+    if (trackPts.isNotEmpty && !_followCamera) {
+      // 仅在「平移浏览」模式显示地图上的位置圆点（无方向语义——真机证实
+      // 高德 Marker 随地图旋转，方向不可保证；跟随模式方向由屏幕固定
+      // 箭头表达，且相机中心=GPS 坐标，圆点与箭头位置天然一致）。
       markers.add(Marker(
         position: trackPts.last,
-        icon: _runnerIcon ?? BitmapDescriptor.defaultMarker,
+        icon: _dotIcon ?? _runnerIcon ?? BitmapDescriptor.defaultMarker,
         anchor: const Offset(0.5, 0.5),
-        rotation: rotation,
         zIndex: 300,
       )..setIdForCopy('run-pos'));
     }
@@ -473,7 +603,7 @@ class _RunScreenState extends State<RunScreen> {
           CameraUpdate.newCameraPosition(
             CameraPosition(
               target: LatLng(pts.last.latitude, pts.last.longitude),
-              zoom: _runZoom,
+              zoom: NavSettings.instance.mapZoom,
             ),
           ),
           animated: false,
@@ -594,12 +724,32 @@ class _RunScreenState extends State<RunScreen> {
                             target: LatLng(30.536395, 114.087279),
                             zoom: 15,
                           ),
-                          rotateGesturesEnabled: true,
+                          rotateGesturesEnabled: false, // 朝向由模式切换按钮控制，避免手势与跟随打架
                           polylines: _buildPolylines(trackPts),
                           markers: _buildMarkers(trackPts),
                           onMapCreated: _onMapCreated,
+                          onCameraMove: _onCameraMove,
                           onCameraMoveEnd: _onCameraMoveEnd,
                         ),
+                        // ---- 屏幕固定的居中导航箭头（阶段 L2 规范三）----
+                        // 跟随模式：相机中心=GPS 坐标，箭头钉在地图区正中央，
+                        // 永远指屏幕正上方（heading-up）或平滑航向（north-up）；
+                        // 绝不使用会随地图旋转的 Marker 表达方向。
+                        if (_started && _followCamera)
+                          Align(
+                            alignment: Alignment.center,
+                            child: IgnorePointer(
+                              child: RunnerArrow(
+                                screenRotationDegrees:
+                                    _orientation == MapOrientation.northUp
+                                        ? (_heading.heading ?? 0)
+                                        : 0,
+                                showDirection:
+                                    _orientation == MapOrientation.headingUp ||
+                                        _heading.heading != null,
+                              ),
+                            ),
+                          ),
                         // ---- 顶部：偏航告警 / 下一转弯大卡片 / 语音故障提示 ----
                         if (offRoute)
                           Positioned(

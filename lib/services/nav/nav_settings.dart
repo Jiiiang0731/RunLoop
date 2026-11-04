@@ -15,6 +15,7 @@ class NavSettings extends ChangeNotifier {
   static const String _kAnnounceM = 'nav_announce_distance_m_v1';
   static const String _kRate = 'nav_speech_rate_v1';
   static const String _kVolume = 'nav_volume_v1';
+  static const String _kMapZoom = 'nav_map_zoom_v1';
 
   /// 语音导航总开关（默认开）。
   bool voiceNavEnabled = true;
@@ -31,6 +32,12 @@ class NavSettings extends ChangeNotifier {
   /// 音量 0.0–1.0。
   double volume = 1.0;
 
+  /// 跑步导航地图基础缩放（阶段 L2 规范二.B）：默认 18.5——
+  /// 高德 z18.5 在主流手机屏上可同时看清前方道路、交叉口与建筑地名。
+  /// 设置页提供 18.0/18.5/19.0 快捷档，供真机对比后选定；
+  /// 临近转弯时运行时自动 +0.2~+0.4（见 run_screen._zoomGoalFor）。
+  double mapZoom = 18.5;
+
   bool loaded = false;
 
   Future<void> load() async {
@@ -40,6 +47,7 @@ class NavSettings extends ChangeNotifier {
     announceDistanceM = (p.getDouble(_kAnnounceM) ?? 50).clamp(20.0, 150.0);
     speechRate = (p.getDouble(_kRate) ?? 0.5).clamp(0.1, 1.0);
     volume = (p.getDouble(_kVolume) ?? 1.0).clamp(0.0, 1.0);
+    mapZoom = (p.getDouble(_kMapZoom) ?? 18.5).clamp(16.5, 20.0);
     loaded = true;
     notifyListeners();
   }
@@ -61,6 +69,11 @@ class NavSettings extends ChangeNotifier {
     return _save(() => volume = clamped, _kVolume, clamped);
   }
 
+  Future<void> setMapZoom(double v) {
+    final double clamped = v.clamp(16.5, 20.0);
+    return _save(() => mapZoom = clamped, _kMapZoom, clamped);
+  }
+
   Future<void> _save(VoidCallback mutate, String key, Object value) async {
     mutate();
     notifyListeners();
@@ -80,6 +93,7 @@ class NavSettings extends ChangeNotifier {
       ..announceDistanceM = 50
       ..speechRate = 0.5
       ..volume = 1.0
+      ..mapZoom = 18.5
       ..loaded = false;
   }
 }

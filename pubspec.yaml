@@ -48,6 +48,9 @@ dependencies:
   # setAudioAttributesForNavigation（导航音频属性/焦点/蓝牙路由）、
   # setQueueMode（排队不积压）、speak(focus:) 均满足规范 2.5/2.6。
   flutter_tts: ^4.2.5
+  # 阶段 L2（Heading-Up 整改）：磁力计航向仅作「静止且无路线切线」时的辅助
+  # 方向源（规范四.5：绝不把手机朝向等同跑步方向）。无传感器机型自动降级。
+  flutter_compass: ^0.8.1
 
 dev_dependencies:
   flutter_test:
