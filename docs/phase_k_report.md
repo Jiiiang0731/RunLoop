@@ -193,7 +193,7 @@ CELL_M=25 ｜ MATCH_M=25 ｜ 跨度 150–1200m ｜ 折返比 ≥0.5 ｜ 最小�
 | C | 手机关 Wi-Fi（仅移动数据 + Tailscale）仍可达 | ⏳ 待用户手机操作 |
 | D | 正式版 App 移动数据下生成真实路线 | ⏳ release APK 已构建（含真实地址，见 §7），待用户安装 |
 | E | 手机与电脑无需同一校园网 | ⏳（C 通过即同时证明） |
-| F | 电脑睡眠/后端停止 → App 明确中文报错；已存路线离线可看可跑 | ⏳ |
+| F | 电脑睡眠/后端停止 → App 明确中文报错；已存路线离线可看可跑 | 🔶 服务端演练通过：停后端 → Serve **502/39ms**，恢复 → **200/48ms**；App 侧代码路径核实（`_httpError` 对非 JSON 502 兜底中文「后端返回 HTTP 502」，断网走 SocketException 兜底）；真机 UI 展示待用户 |
 | G | 重启电脑自动拉起后端 + Tailscale | ⏳（自启 VBS 已注册存在 ✓；`Get-Service Tailscale` = Running + **StartType Automatic** ✓；待用户实际重启一次做终验） |
 
 **A 项过程记录（如实）**：`setup_tailscale_serve.ps1` 首跑时 Serve 配置成功，但 HTTPS 验证
