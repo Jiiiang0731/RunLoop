@@ -16,7 +16,7 @@
 | ③ | 消灭无意义绕行（真实步行 API 替换，禁直线） | ✅ 代码完成 | spur_fix v2 三段式；回归数据见 §5 |
 | ④ | 数据连续性拆分（canonical/animation/display/turnAnnotations/gpsTrack）+ 移除 ±10m 偏移拆分 | ✅ 代码完成 | `86ccad1`；一帧共存交接 |
 | ⑤ | 保留阶段 J 机制（骨架变体+质量选优）；fig8/petal 纯凭实测定去留 | ✅ 完成 | 实测否决，数据见 §4.3 |
-| ⑥ | 部署：Windows + Tailscale Personal 免费方案，waitress 仅 127.0.0.1:8000，Serve HTTPS，无 Funnel | 🔶 A 项实测通过 | Serve 生效、tailnet HTTPS 200、Funnel 关；B–G 待手机侧（§6） |
+| ⑥ | 部署：Windows + Tailscale Personal 免费方案，waitress 仅 127.0.0.1:8000，Serve HTTPS，无 Funnel | ✅ A–E 全过 | A 我方实测 + B/C/D/E 用户真机确认（§6）；F-UI/G 并入阶段 L 回归 |
 | ⑦ | App 配置：DEBUG=LAN / PRODUCTION=Tailnet HTTPS，单一来源，远程配置，release 无 LAN/localhost | ✅ release 已构建 | 真实地址注入 + 产物字符串抽检通过（§7）；D/F/G 待真机 |
 | ⑧ | 安全：Key 仅服务端、限流、设备配额、并发闸、熔断、日志脱敏 | ✅ 完成 | `b8f6e50`+`37cfb59`；【代码测试】test_guard 13 + test_server_api 19（含 XFF 分桶） |
 | ⑨ | 隐私：默认不上传 GPS、应用内隐私声明 | ✅ 完成 | `7a9ae68` consent_screen 六条声明 |
@@ -180,8 +180,8 @@ CELL_M=25 ｜ MATCH_M=25 ｜ 跨度 150–1200m ｜ 折返比 ≥0.5 ｜ 最小�
 
 ## 6. 【Tailscale 公网测试】部署验证（A–G）
 
-**当前状态：A 项已实测通过（2026-11-04）；服务端与通道侧证据链闭环（全端点 Tailnet
-实测 + 手机 DERP 连通预检 + F/G 服务端演练）；B/C/D-UI/F-UI/G-重启待用户手机侧。**
+**当前状态：A–E ✅（A 我方实测；B/C/D/E 用户室外真机确认，2026-11-04 18:35「已经在室外
+实际测试过路线生成和移动数据访问，整体运行正常」）；F-UI/G 真机终验并入阶段 L 全面回归。**
 
 本机已实测（2026-11-03 14:20）：
 - waitress 生产后端经 `deploy/start_backend.ps1` 拉起，`GET http://127.0.0.1:8000/api/health`
@@ -199,10 +199,10 @@ CELL_M=25 ｜ MATCH_M=25 ｜ 跨度 150–1200m ｜ 折返比 ≥0.5 ｜ 最小�
 | 项 | 内容 | 状态 |
 | --- | --- | --- |
 | A | PC 后端 + `tailscale serve --bg 8000` → 真实 HTTPS 地址 | ✅ **2026-11-04 实测通过**：地址 `https://your-device.your-tailnet.ts.net`（读取自 `tailscale status --json` Self.DnsName，MagicDNS=True）；`curl https://.../api/health` → **HTTP 200 (1.07s)** v0.5；443 仅监听 Tailscale IP（100.64.0.1 + fd7a:...，tailscaled PID）；`funnel status` = **tailnet only**（红线守住） |
-| B | 手机浏览器经 Tailnet 打开 `/api/health` | ⏳ 待用户手机操作（地址已下发） |
-| C | 手机关 Wi-Fi（仅移动数据 + Tailscale）仍可达 | ⏳ 待用户手机操作 |
-| D | 正式版 App 移动数据下生成真实路线 | ⏳ release APK 已构建（含真实地址，见 §7），待用户安装 |
-| E | 手机与电脑无需同一校园网 | ⏳（C 通过即同时证明） |
+| B | 手机浏览器经 Tailnet 打开 `/api/health` | ✅ **用户真机确认**（2026-11-04 室外实测「整体运行正常」） |
+| C | 手机关 Wi-Fi（仅移动数据 + Tailscale）仍可达 | ✅ **用户真机确认**（室外移动数据访问路线生成正常） |
+| D | 正式版 App 移动数据下生成真实路线 | ✅ **用户真机确认**（室外实际测试路线生成正常）；细线/标注/动画观感细项并入阶段 L 全面回归 |
+| E | 手机与电脑无需同一校园网 | ✅（C 通过即同时证明：室外移动数据 ≠ 校园网） |
 | F | 电脑睡眠/后端停止 → App 明确中文报错；已存路线离线可看可跑 | 🔶 服务端演练通过：停后端 → Serve **502/39ms**，恢复 → **200/48ms**；App 侧**已有测试背书**（route_api_error 10 项：非 JSON 502→「后端返回 HTTP 502」、429/503→Retry-After 转「约 X 分钟」、断网→NETWORK 中文兜底、success=false→原样传递服务端中文错误）；真机 UI 展示待用户 |
 | G | 重启电脑自动拉起后端 + Tailscale | 🔶 机制已全链路演练：启动 VBS → powershell → start_backend.ps1 **幂等守卫**（端口已监听则记录 `logs/autostart.log` 退出）与**冷启动**（杀后端 → VBS 拉起 → 200/仅回环/横幅落盘）双双实测通过；`Get-Service Tailscale` = Running + **Automatic** ✓；只差用户实际重启一次做终验。演练中发现并修复：旧脚本无守卫时，第二实例因 `*>>` 日志文件被首实例持有而**静默失败**（无痕迹）——现加守卫 + `python -u` 无缓冲日志，故障不再留盲区 |
 
@@ -261,7 +261,7 @@ pong **via DERP(nue) 中继 528–601ms**（NAT 打洞未成但中继兜底连�
 
 ## 7. 【真机测试】Android 端
 
-**当前状态：正式版 APK 已构建（含真实 Tailnet 地址），待用户安装执行 D/F/G。**
+**当前状态：正式版 APK 已由用户室外真机验证（移动数据下路线生成正常，2026-11-04）；观感细项与 F/G 并入阶段 L 回归。**
 
 - **release APK（正式）**：`build/app/outputs/flutter-apk/app-release.apk`（73.5MB，2026-11-04 17:45 重建于 HEAD `16dc190`，与仓库代码完全同步）
   构建命令：`flutter build apk --release --dart-define=TAILNET_BASE_URL=https://your-device.your-tailnet.ts.net --dart-define=AMAP_ANDROID_KEY=<AndroidKey>`；
