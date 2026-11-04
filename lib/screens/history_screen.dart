@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../models/run_record.dart';
 import '../services/storage/database.dart';
 import '../utils/geo.dart';
+import 'run_detail_screen.dart';
 
 /// 历史记录列表。
 class HistoryScreen extends StatefulWidget {
@@ -85,7 +86,16 @@ class _HistoryScreenState extends State<HistoryScreen> {
                     '${_fmt(r.startTime)} · ${formatDuration(r.durationSeconds)} · '
                     '配速 ${formatPace(r.avgPaceSecondsPerKm)}',
                   ),
-                  trailing: r.rpe != null ? Text('RPE ${r.rpe}') : null,
+                  trailing: r.rpe != null ? Text('RPE ${r.rpe}') : const Icon(Icons.chevron_right),
+                  // 点击进入详情：每公里分段表（模块 B，规范 3.3）
+                  onTap: () {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute<void>(
+                        builder: (_) => RunDetailScreen(record: r),
+                      ),
+                    );
+                  },
                 ),
               );
             },

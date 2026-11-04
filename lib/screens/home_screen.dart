@@ -16,6 +16,7 @@ import '../services/storage/database.dart';
 import 'history_screen.dart';
 import 'location_diagnostics_screen.dart';
 import 'route_candidates_screen.dart';
+import 'settings_screen.dart';
 
 /// 首页：高德地图 + 实时定位 + 目标距离输入 + 生成闭环路线。
 class HomeScreen extends StatefulWidget {
@@ -317,6 +318,13 @@ class _HomeScreenState extends State<HomeScreen> {
                     Expanded(
                       child: Text('环跑',
                           style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.green[800])),
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.settings),
+                      tooltip: '语音导航设置',
+                      onPressed: () {
+                        Navigator.push(context, MaterialPageRoute<void>(builder: (_) => const SettingsScreen()));
+                      },
                     ),
                     IconButton(
                       icon: const Icon(Icons.tune),

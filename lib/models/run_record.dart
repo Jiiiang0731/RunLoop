@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'km_split.dart';
 import 'track_point.dart';
 
 /// 一次跑步记录。
@@ -16,6 +17,9 @@ class RunRecord {
   final int? rpe; // 主观疲劳 1-10
   final String? note;
 
+  /// 每公里分段（阶段 L 模块 B；旧记录无此数据时为空列表）。
+  final List<KmSplit> kmSplits;
+
   const RunRecord({
     this.id,
     required this.startTime,
@@ -28,6 +32,7 @@ class RunRecord {
     this.plannedRoute,
     this.rpe,
     this.note,
+    this.kmSplits = const <KmSplit>[],
   });
 
   Map<String, dynamic> toMap() => {
@@ -42,6 +47,9 @@ class RunRecord {
         'planned_route': plannedRoute == null ? null : jsonEncode(plannedRoute),
         'rpe': rpe,
         'note': note,
+        'km_splits': kmSplits.isEmpty
+            ? null
+            : jsonEncode(kmSplits.map((KmSplit s) => s.toJson()).toList()),
       };
 
   factory RunRecord.fromMap(Map<String, dynamic> map) {
@@ -54,6 +62,13 @@ class RunRecord {
                 ((e as List<dynamic>)[0] as num).toDouble(),
                 (e[1] as num).toDouble(),
               ])
+          .toList();
+    }
+    // 旧库无 km_splits 列 / 旧记录为 NULL → 空列表（向后兼容）。
+    List<KmSplit> splits = const <KmSplit>[];
+    if (map['km_splits'] != null) {
+      splits = (jsonDecode(map['km_splits'] as String) as List<dynamic>)
+          .map((dynamic s) => KmSplit.fromJson(s as Map<String, dynamic>))
           .toList();
     }
     return RunRecord(
@@ -72,6 +87,7 @@ class RunRecord {
       plannedRoute: planned,
       rpe: map['rpe'] as int?,
       note: map['note'] as String?,
+      kmSplits: splits,
     );
   }
 }

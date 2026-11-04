@@ -30,12 +30,13 @@ class NavAnnouncer {
     required SpeechEngine engine,
     required NavVoiceConfig config,
     DateTime Function()? clock,
-  })  : _engine = engine,
-        _config = config,
-        _clock = clock ?? DateTime.now;
+  }) : _clock = clock ?? DateTime.now {
+    _engine = engine;
+    _config = config;
+  }
 
-  final SpeechEngine _engine;
-  final NavVoiceConfig _config;
+  late final SpeechEngine _engine;
+  late final NavVoiceConfig _config;
   final DateTime Function() _clock;
 
   /// 连续转弯合并窗口（米）。
@@ -156,7 +157,7 @@ class NavAnnouncer {
         }
         final String roadPart = s.road.isNotEmpty ? '进入${s.road}' : '';
         if (j != null) {
-          final RouteStep s2 = _steps[j!];
+          final RouteStep s2 = _steps[j];
           final double d2 = s2.cumulativeM - s.cumulativeM;
           final String road2 = s2.road.isNotEmpty ? '进入${s2.road}' : '';
           _speakTurn('前方 ${_sayDist(remaining)}米$act$roadPart，'

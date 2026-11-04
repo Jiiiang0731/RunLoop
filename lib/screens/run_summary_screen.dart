@@ -4,6 +4,7 @@ import '../models/planned_route.dart';
 import '../models/run_record.dart';
 import '../services/storage/database.dart';
 import '../utils/geo.dart';
+import '../widgets/km_splits_table.dart';
 
 /// 跑步总结页：展示本次数据，填写 RPE/备注后保存。
 class RunSummaryScreen extends StatefulWidget {
@@ -34,6 +35,7 @@ class _RunSummaryScreenState extends State<RunSummaryScreen> {
       plannedRoute: widget.plannedRoute?.polyline,
       rpe: _rpe,
       note: _noteController.text.trim().isEmpty ? null : _noteController.text.trim(),
+      kmSplits: widget.record.kmSplits, // 每公里分段一并入库（模块 B）
     );
     try {
       await AppDatabase.instance.insertRun(withMeta);
@@ -91,6 +93,16 @@ class _RunSummaryScreenState extends State<RunSummaryScreen> {
               subtitle: Text(
                 '${_fmt(start)}${end != null ? ' ~ ${_fmt(end)}' : ''}',
               ),
+            ),
+          ),
+          // ---- 每公里分段（模块 B：真实结算值，绝不造假） ----
+          const SizedBox(height: 16),
+          const Text('每公里分段', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+          const SizedBox(height: 8),
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(12),
+              child: KmSplitsTable(splits: r.kmSplits),
             ),
           ),
           const SizedBox(height: 16),

@@ -31,7 +31,7 @@ class AppDatabase {
     final String path = p.join(dir, 'runloop.db');
     return openDatabase(
       path,
-      version: 3,
+      version: 4,
       onCreate: (Database db, int version) async {
         await db.execute('''
           CREATE TABLE run_records (
@@ -45,7 +45,8 @@ class AppDatabase {
             track_points TEXT NOT NULL,
             planned_route TEXT,
             rpe INTEGER,
-            note TEXT
+            note TEXT,
+            km_splits TEXT
           )
         ''');
         await db.execute(_createPlannedRoutesTable);
@@ -56,6 +57,10 @@ class AppDatabase {
         }
         if (oldVersion < 3) {
           await db.execute(_createPlannedRoutesTable);
+        }
+        if (oldVersion < 4) {
+          // 阶段 L 模块 B：每公里分段（JSON；旧记录为 NULL → 解析为空列表）。
+          await db.execute('ALTER TABLE run_records ADD COLUMN km_splits TEXT');
         }
       },
     );

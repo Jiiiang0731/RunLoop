@@ -103,6 +103,37 @@ class RoutePath {
     return out;
   }
 
+  /// 距离 [d] 之后的折线（含插值起点），用于跑步页「剩余路线」绘制
+  /// （阶段 L 模块 E：与 [upTo] 互补，两者共享插值点保证首尾衔接）。
+  List<LatLng> fromDistance(double d) {
+    if (points.isEmpty) return <LatLng>[];
+    if (points.length == 1) return <LatLng>[points.first];
+    final double dist = d.clamp(0.0, total);
+    final List<LatLng> out = <LatLng>[];
+    for (int i = 1; i < points.length; i++) {
+      if (cum[i] <= dist) continue; // 该点已在跑过的部分
+      if (out.isEmpty) {
+        // 第一个未越过的段：先补 [d] 处的插值起点（除非恰落在点上）
+        final double segStart = cum[i - 1];
+        final double segLen = cum[i] - segStart;
+        final double t = segLen <= 0 ? 0 : (dist - segStart) / segLen;
+        if (t > 1e-9) {
+          final LatLng a = points[i - 1];
+          final LatLng b = points[i];
+          out.add(LatLng(
+            a.latitude + (b.latitude - a.latitude) * t,
+            a.longitude + (b.longitude - a.longitude) * t,
+          ));
+        } else {
+          out.add(points[i - 1]);
+        }
+      }
+      out.add(points[i]);
+    }
+    if (out.isEmpty) out.add(points.last);
+    return out;
+  }
+
   /// 把任意点 [p] 投影到折线上（全局最近）：返回沿线里程、垂距与投影点。
   ///
   /// 局部平面近似（纬度方向 1° ≈ 111km，经度按 cos(lat) 收缩），

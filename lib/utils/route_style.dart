@@ -35,6 +35,12 @@ class RouteStyle {
   /// GPS 实际轨迹颜色。
   static const Color trackColor = Color(0xFFFF3D00);
 
+  /// 已跑完的规划路段（阶段 L 模块 E）：低视觉权重的蓝灰色、半透明、
+  /// 更细——与橙色 GPS 轨迹「融合」（轨迹压在上方），又保留规划走向可读性。
+  static const Color completedColor = Color(0x9978909C);
+  static const double completedWidth = 2.4;
+  static const double zCompleted = 8;
+
   // ---------- 线宽（dp）——阶段 K 细线化 ----------
   static const double coreWidth = 2.8;
   static const double casingWidth = 4.6;

@@ -25,6 +25,15 @@
         <!-- 高德定位 SDK 必需服务 -->
         <service android:name="com.amap.api.location.APSService" />
 
+        <!-- 阶段 L：跑步前台服务（flutter_foreground_task 要求应用侧声明；
+             Android 14+ 必须标注 foregroundServiceType，定位型 = location。
+             配合 FOREGROUND_SERVICE / FOREGROUND_SERVICE_LOCATION 权限与
+             运行时 ACCESS_FINE_LOCATION 授权，锁屏后 GPS/计时/语音继续运行）。 -->
+        <service
+            android:name="com.pravera.flutter_foreground_task.service.ForegroundService"
+            android:foregroundServiceType="location"
+            android:exported="false" />
+
         <activity
             android:name=".MainActivity"
             android:exported="true"
