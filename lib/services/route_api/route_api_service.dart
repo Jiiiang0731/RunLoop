@@ -26,10 +26,14 @@ class RouteApiException implements Exception {
 /// 429/503 解析 Retry-After 转为可展示的等待提示；后端地址未配置时立即抛
 /// NOT_CONFIGURED（离线优先模式，绝不静默失败）。
 class RouteApiService {
-  RouteApiService({String? baseUrl})
-      : baseUrl = baseUrl ?? AppConfig.routeApiBaseUrl;
+  RouteApiService({String? baseUrl, http.Client? client})
+      : baseUrl = baseUrl ?? AppConfig.routeApiBaseUrl,
+        _client = client ?? http.Client();
 
   final String baseUrl;
+
+  /// 可注入 HTTP 客户端（测试用 MockClient；生产默认持久 Client 复用连接）。
+  final http.Client _client;
 
   Future<Map<String, String>> _headers() async {
     final Map<String, String> h = <String, String>{
@@ -113,7 +117,7 @@ class RouteApiService {
     final Uri uri = Uri.parse('$baseUrl/api/route/generate');
     http.Response resp;
     try {
-      resp = await http
+      resp = await _client
           .post(
             uri,
             headers: await _headers(),
@@ -180,7 +184,7 @@ class RouteApiService {
   }) async {
     _ensureConfigured();
     final Uri uri = Uri.parse('$baseUrl/api/route/pois');
-    final http.Response resp = await http
+    final http.Response resp = await _client
         .post(
           uri,
           headers: await _headers(),
@@ -209,7 +213,7 @@ class RouteApiService {
       return null;
     }
     try {
-      final http.Response r = await http
+      final http.Response r = await _client
           .get(Uri.parse('$baseUrl/api/client-config'), headers: await _headers())
           .timeout(const Duration(seconds: 10));
       if (r.statusCode != 200) {
@@ -231,7 +235,7 @@ class RouteApiService {
       return false;
     }
     try {
-      final http.Response r = await http
+      final http.Response r = await _client
           .get(Uri.parse('$baseUrl/api/health'), headers: await _headers())
           .timeout(const Duration(seconds: 5));
       return r.statusCode == 200;

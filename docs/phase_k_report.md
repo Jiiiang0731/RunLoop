@@ -12,7 +12,7 @@
 | # | 规范条目 | 状态 | 证据 |
 | --- | --- | --- | --- |
 | ① | 路线视觉重设计（细主线/轻描边/分层/小巧稀疏箭头/保留生长动画） | ✅ 代码完成 | `86ccad1`；【真机测试】待用户装机确认观感 |
-| ② | 真实重复段识别 + 去/返两侧标注（像素级侧偏、青/紫、随缩放） | ✅ 代码完成 | overlap v2 + turn_annotations；【代码测试】123+45 全绿 |
+| ② | 真实重复段识别 + 去/返两侧标注（像素级侧偏、青/紫、随缩放） | ✅ 代码完成 | overlap v2 + turn_annotations；【代码测试】125+55 全绿 |
 | ③ | 消灭无意义绕行（真实步行 API 替换，禁直线） | ✅ 代码完成 | spur_fix v2 三段式；回归数据见 §5 |
 | ④ | 数据连续性拆分（canonical/animation/display/turnAnnotations/gpsTrack）+ 移除 ±10m 偏移拆分 | ✅ 代码完成 | `86ccad1`；一帧共存交接 |
 | ⑤ | 保留阶段 J 机制（骨架变体+质量选优）；fig8/petal 纯凭实测定去留 | ✅ 完成 | 实测否决，数据见 §4.3 |
@@ -22,7 +22,7 @@
 | ⑨ | 隐私：默认不上传 GPS、应用内隐私声明 | ✅ 完成 | `7a9ae68` consent_screen 六条声明 |
 | ⑩ | 离线：选中路线全量入库、无网可看可跑、服务器宕机明确报错 | ✅ 代码完成 | `7a9ae68`；【真机测试】待飞行模式验证 |
 | ⑪ | 开机自启 + 合理防睡眠（不擅改电源设置，先说明） | ✅ 已注册 | 启动文件夹 `RunLoopBackend.vbs` 已写入（任务计划需管理员，自动降级）；后端已实测拉起；set_awake.ps1 需用户确认，未执行 |
-| ⑫ | 测试全绿 + 蔡店 5/10/15/20km 回归（spur 前后对比） | ✅ 完成 | Python 123 ✅ Dart 45 ✅；回归 7/7 达标（637 次真实调用），数据见 §5 |
+| ⑫ | 测试全绿 + 蔡店 5/10/15/20km 回归（spur 前后对比） | ✅ 完成 | Python 125 ✅ Dart 55 ✅；回归 7/7 达标（637 次真实调用），数据见 §5 |
 
 ## 2. 交付物清单
 
@@ -51,8 +51,8 @@
 
 | 套件 | 数量 | 结果 | 说明 |
 | --- | --- | --- | --- |
-| Python `tests/`（pytest） | 123 | ✅ 全绿 | 含 spur_fix 跨段/容差 20 项、guard 13 项、server API 契约 17 项、overlap v2 配对 5 项 |
-| Dart `test/`（flutter test） | 45 | ✅ 全绿 | route_path 24 + run_recorder 3 + turn_annotations 12 + offline_data 6（离线 JSON 往返无损/幂等 + 设备 ID 契约） |
+| Python `tests/`（pytest） | 125 | ✅ 全绿 | 含 spur_fix 跨段/容差 20 项、guard 13 项、server API 契约 19 项（含 XFF 分桶 2 项）、overlap v2 配对 5 项 |
+| Dart `test/`（flutter test） | 55 | ✅ 全绿 | route_path 24 + run_recorder 3 + turn_annotations 12 + offline_data 6（离线 JSON 往返无损/幂等 + 设备 ID 契约）+ route_api_error 10（全部错误路径中文提示 + MockClient 成功路径） |
 | `flutter analyze`（lib/test） | — | ✅ 0 error / 0 warning | 仅 1 条 info 级 lint（use_null_aware_elements，保留 if 写法以兼容 SDK 约束） |
 | debug APK 构建 | — | ✅ `√ Built app-debug.apk` | Gradle 76s；exit 1 为 SDK XML 版本警告（良性） |
 
@@ -193,7 +193,7 @@ CELL_M=25 ｜ MATCH_M=25 ｜ 跨度 150–1200m ｜ 折返比 ≥0.5 ｜ 最小�
 | C | 手机关 Wi-Fi（仅移动数据 + Tailscale）仍可达 | ⏳ 待用户手机操作 |
 | D | 正式版 App 移动数据下生成真实路线 | ⏳ release APK 已构建（含真实地址，见 §7），待用户安装 |
 | E | 手机与电脑无需同一校园网 | ⏳（C 通过即同时证明） |
-| F | 电脑睡眠/后端停止 → App 明确中文报错；已存路线离线可看可跑 | 🔶 服务端演练通过：停后端 → Serve **502/39ms**，恢复 → **200/48ms**；App 侧代码路径核实（`_httpError` 对非 JSON 502 兜底中文「后端返回 HTTP 502」，断网走 SocketException 兜底）；真机 UI 展示待用户 |
+| F | 电脑睡眠/后端停止 → App 明确中文报错；已存路线离线可看可跑 | 🔶 服务端演练通过：停后端 → Serve **502/39ms**，恢复 → **200/48ms**；App 侧**已有测试背书**（route_api_error 10 项：非 JSON 502→「后端返回 HTTP 502」、429/503→Retry-After 转「约 X 分钟」、断网→NETWORK 中文兜底、success=false→原样传递服务端中文错误）；真机 UI 展示待用户 |
 | G | 重启电脑自动拉起后端 + Tailscale | 🔶 机制已全链路演练：启动 VBS → powershell → start_backend.ps1 **幂等守卫**（端口已监听则记录 `logs/autostart.log` 退出）与**冷启动**（杀后端 → VBS 拉起 → 200/仅回环/横幅落盘）双双实测通过；`Get-Service Tailscale` = Running + **Automatic** ✓；只差用户实际重启一次做终验。演练中发现并修复：旧脚本无守卫时，第二实例因 `*>>` 日志文件被首实例持有而**静默失败**（无痕迹）——现加守卫 + `python -u` 无缓冲日志，故障不再留盲区 |
 
 **A 项过程记录（如实）**：`setup_tailscale_serve.ps1` 首跑时 Serve 配置成功，但 HTTPS 验证
