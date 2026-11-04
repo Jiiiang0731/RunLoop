@@ -1,7 +1,7 @@
 # 阶段 K 验收报告（环跑 RunLoop）
 
-> 生成日期：2026-11-03 ｜ 回归代码基线：master `58875e6`；追加提交：`f789cc0`（回归数据+本报告）、
-> `3246cb2`（部署实测+自启注册）、`b679a85`（连续性/离线测试）——均不影响回归所测服务端代码。
+> 生成日期：2026-11-03（2026-11-04 更新至最新状态）｜ 回归代码基线：master `58875e6`；
+> 追加提交见 §2.1——`f789cc0` 之后均为部署实测/测试补强，不影响回归所测算法代码。
 > 验收分区约定：**【代码测试】**本机可复现的自动化测试；**【Tailscale 公网测试】**需真实 Tailnet 环境；
 > **【真机测试】**需 Android 手机；**【未验证】**如实列出、绝不冒充通过。
 > 铁律回顾：±500m 容差绝对化（决策①）；标注/视觉永不改真实几何（规范③④）；
@@ -18,10 +18,10 @@
 | ⑤ | 保留阶段 J 机制（骨架变体+质量选优）；fig8/petal 纯凭实测定去留 | ✅ 完成 | 实测否决，数据见 §4.3 |
 | ⑥ | 部署：Windows + Tailscale Personal 免费方案，waitress 仅 127.0.0.1:8000，Serve HTTPS，无 Funnel | 🔶 A 项实测通过 | Serve 生效、tailnet HTTPS 200、Funnel 关；B–G 待手机侧（§6） |
 | ⑦ | App 配置：DEBUG=LAN / PRODUCTION=Tailnet HTTPS，单一来源，远程配置，release 无 LAN/localhost | ✅ release 已构建 | 真实地址注入 + 产物字符串抽检通过（§7）；D/F/G 待真机 |
-| ⑧ | 安全：Key 仅服务端、限流、设备配额、并发闸、熔断、日志脱敏 | ✅ 完成 | `b8f6e50`；【代码测试】test_guard 13 + test_server_api 17 |
+| ⑧ | 安全：Key 仅服务端、限流、设备配额、并发闸、熔断、日志脱敏 | ✅ 完成 | `b8f6e50`+`37cfb59`；【代码测试】test_guard 13 + test_server_api 19（含 XFF 分桶） |
 | ⑨ | 隐私：默认不上传 GPS、应用内隐私声明 | ✅ 完成 | `7a9ae68` consent_screen 六条声明 |
 | ⑩ | 离线：选中路线全量入库、无网可看可跑、服务器宕机明确报错 | ✅ 代码完成 | `7a9ae68`；【真机测试】待飞行模式验证 |
-| ⑪ | 开机自启 + 合理防睡眠（不擅改电源设置，先说明） | ✅ 已注册 | 启动文件夹 `RunLoopBackend.vbs` 已写入（任务计划需管理员，自动降级）；后端已实测拉起；set_awake.ps1 需用户确认，未执行 |
+| ⑪ | 开机自启 + 合理防睡眠（不擅改电源设置，先说明） | ✅ 已注册 | 启动文件夹 `RunLoopBackend.vbs`（任务计划需管理员，自动降级）；两阶段实测：幂等守卫 + 冷启动拉起（`2f52e87`）；set_awake.ps1 需用户确认，未执行 |
 | ⑫ | 测试全绿 + 蔡店 5/10/15/20km 回归（spur 前后对比） | ✅ 完成 | Python 125 ✅ Dart 55 ✅；回归 7/7 达标（637 次真实调用），数据见 §5 |
 
 ## 2. 交付物清单
@@ -40,6 +40,15 @@
 | `f789cc0` | 最终蔡店回归（冻结代码 7/7 达标）+ 本报告初版 + 旧代码基线存档 |
 | `3246cb2` | 部署实测：后端拉起、自启注册（启动文件夹降级）、清剿残留 0.0.0.0 监听 |
 | `b679a85` | 数据连续性/离线完整性测试（JSON 往返无损/幂等 + 设备 ID 契约） |
+| `52296ab` | release 构建链路干跑（不注入地址，产物改名 dryrun 防误装） |
+| `8960cbb` | Tailscale Serve 实测通过（A 项 ✅）+ 正式版 release APK（真实地址注入） |
+| `59e2cba` | D 项服务端侧预演（Tailnet HTTPS 全链路真实生成 5km/15km） |
+| `37cfb59` | 反代客户端识别修正（waitress trusted_proxy + XFF 兜底分桶，2 项新测试） |
+| `60adddd` | G 项自启证据补记（Tailscale 服务 Automatic+Running） |
+| `dbf047b` | App 全部依赖端点 Tailnet 实测 + 手机 DERP 中继连通预检 |
+| `45f5a91` | F 项服务端演练（宕机 502/恢复 200）+ App 非 JSON 502 兜底核实 |
+| `2f52e87` | 自启链路加固（start_backend.ps1 幂等守卫 + `python -u`；G 机制两阶段实测） |
+| `16dc190` | API 客户端可测性重构 + 错误路径全覆盖测试（Dart 55 全绿）+ APK 重建同步 |
 
 ### 2.2 关键文件
 
@@ -171,7 +180,8 @@ CELL_M=25 ｜ MATCH_M=25 ｜ 跨度 150–1200m ｜ 折返比 ≥0.5 ｜ 最小�
 
 ## 6. 【Tailscale 公网测试】部署验证（A–G）
 
-**当前状态：Tailnet 链路未验证（等待用户完成安装清单）；本机侧前置已全部就绪并实测。**
+**当前状态：A 项已实测通过（2026-11-04）；服务端与通道侧证据链闭环（全端点 Tailnet
+实测 + 手机 DERP 连通预检 + F/G 服务端演练）；B/C/D-UI/F-UI/G-重启待用户手机侧。**
 
 本机已实测（2026-11-03 14:20）：
 - waitress 生产后端经 `deploy/start_backend.ps1` 拉起，`GET http://127.0.0.1:8000/api/health`
@@ -253,19 +263,18 @@ pong **via DERP(nue) 中继 528–601ms**（NAT 打洞未成但中继兜底连�
 
 **当前状态：正式版 APK 已构建（含真实 Tailnet 地址），待用户安装执行 D/F/G。**
 
-- **release APK（正式）**：`build/app/outputs/flutter-apk/app-release.apk`（73.5MB，2026-11-04 17:02）
+- **release APK（正式）**：`build/app/outputs/flutter-apk/app-release.apk`（73.5MB，2026-11-04 17:45 重建于 HEAD `16dc190`，与仓库代码完全同步）
   构建命令：`flutter build apk --release --dart-define=TAILNET_BASE_URL=https://your-device.your-tailnet.ts.net --dart-define=AMAP_ANDROID_KEY=<AndroidKey>`；
-  产物抽检（libapp.so 字符串）：`https://your-device.your-tailnet.ts.net` **存在** ✓、
+  产物抽检（libapp.so 字符串，两次构建后均复检）：`https://your-device.your-tailnet.ts.net` **存在** ✓、
   局域网 IP `192.168.1.100` **不存在** ✓、`127.0.0.1` **不存在** ✓
-  （`localhost` 字面量存在仅为 `_validTailnet` 的**拒绝黑名单**，属设计内）；
-- `build/app/outputs/flutter-apk/app-debug.apk`（LAN 配置 `http://192.168.1.100:8000`，仅同校园网 debug 用）；
+  （`localhost`/`192.168.` 字面量存在仅为 `_validTailnet` 的**拒绝黑名单**，属设计内）；
+- `build/app/outputs/flutter-apk/app-debug.apk`（189.1MB，2026-11-04 17:46，LAN 配置 `http://192.168.1.100:8000`，仅同校园网 debug 用）；
 - **release 构建链路已预验证**（2026-11-03，不含地址注入的干跑）：`√ Built app-release.apk (73.5MB)`，
   签名（android/key.properties 沿用）、R8、图标字体树摇全部通过——最终构建只剩注入真实
   `TAILNET_BASE_URL` 一步，风险已排除。干跑产物已改名
   `app-release-dryrun-no-tailnet.apk`（未注入地址 → 装机后如实显示「服务器地址未配置」
   红条离线模式，**不可当正式版使用**，仅证明工具链）；
-- 待验证项：细线观感/标注两侧对称与缩放跟随/生长动画无回退/切换路线无空窗/飞行模式下已存路线可看可跑/服务器宕机错误提示文案/远程配置公告；
-- release APK：待 Tailnet 真实地址 → `flutter build apk --release --dart-define=TAILNET_BASE_URL=https://<实测地址> --dart-define=AMAP_ANDROID_KEY=<AndroidKey>`（签名沿用 `android/key.properties`，不重新生成）。
+- 待验证项：细线观感/标注两侧对称与缩放跟随/生长动画无回退/切换路线无空窗/飞行模式下已存路线可看可跑/服务器宕机错误提示文案/远程配置公告。
 
 ## 8. 集中配置清单（决策⑥等）
 
@@ -298,8 +307,19 @@ pong **via DERP(nue) 中继 528–601ms**（NAT 打洞未成但中继兜底连�
 
 ## 11. 用户操作清单（最小集）
 
-1. 按 `docs/tailscale_setup_guide.md` 完成：PC 安装登录 Tailscale → 控制台开 MagicDNS + HTTPS Certificates → 手机装 Tailscale 登录同一账号；
-2. 回复我「装好了」→ 我运行 `deploy/setup_tailscale_serve.ps1` 完成 A–C/E 验证并读取真实地址（后端 waitress 已在运行、登录自启已注册，这两项无需你操作）；
-3. （可选）回复「同意防睡眠」→ 我运行 `deploy/set_awake.ps1`（仅 AC 待机=从不，可随时恢复）；
-4. 安装 `app-debug.apk` 真机试用（同校园网）；我拿到真实地址后构建 release APK 供移动数据验证 D/F/G；
-5. 重启一次电脑验证 G（自启）。
+**已完成（无需再操作）**：
+1. ✅ PC + 手机安装 Tailscale、登录同一账号、Connected（用户 2026-11-04「装好了」）；
+2. ✅ MagicDNS + HTTPS Certificates 生效（`tailscale cert` 显式签发验证）；
+3. ✅ `setup_tailscale_serve.ps1` 运行通过，Serve HTTPS 代理生效，Funnel 关；
+4. ✅ 正式版 release APK 已构建并交付（真实地址注入 + 二进制复检）。
+
+**待用户执行（手机侧验收 B/C/D/F/G）**：
+1. **B**：手机浏览器（连 Wi-Fi）打开 `https://your-device.your-tailnet.ts.net/api/health`，应见 JSON `status: ok`；
+2. **C/E**：关 Wi-Fi 纯移动数据（确认 Tailscale 仍 Connected）再开一次——通过即同时证明 E；
+   失败先检查手机 Tailscale 连接状态与电池白名单（国产 ROM 可能杀后台）；
+3. **D**：安装 `app-release.apk`（允许未知来源），移动数据下生成 5km 路线，
+   观察细主线/两侧转弯标注/生长动画；
+4. **F**：通知我停后端（或让电脑睡眠）→ App 应显示明确中文错误；飞行模式下
+   首页「恢复上次路线」应可看可跑已存路线；
+5. **G**：重启一次电脑 → 手机再开 B 地址验证后端 + Tailscale 自动恢复；
+6. （可选）回复「同意防睡眠」→ 运行 `deploy/set_awake.ps1`（仅 AC 待机=从不，可恢复）。
