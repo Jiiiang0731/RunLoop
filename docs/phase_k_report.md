@@ -16,8 +16,8 @@
 | ③ | 消灭无意义绕行（真实步行 API 替换，禁直线） | ✅ 代码完成 | spur_fix v2 三段式；回归数据见 §5 |
 | ④ | 数据连续性拆分（canonical/animation/display/turnAnnotations/gpsTrack）+ 移除 ±10m 偏移拆分 | ✅ 代码完成 | `86ccad1`；一帧共存交接 |
 | ⑤ | 保留阶段 J 机制（骨架变体+质量选优）；fig8/petal 纯凭实测定去留 | ✅ 完成 | 实测否决，数据见 §4.3 |
-| ⑥ | 部署：Windows + Tailscale Personal 免费方案，waitress 仅 127.0.0.1:8000，Serve HTTPS，无 Funnel | ✅ 代码/脚本完成 | `b8f6e50`+`58875e6`；【Tailscale 公网测试】待用户安装后执行 A–G |
-| ⑦ | App 配置：DEBUG=LAN / PRODUCTION=Tailnet HTTPS，单一来源，远程配置，release 无 LAN/localhost | ✅ 代码完成 | `ea34e0d`；release APK 待真实地址注入 |
+| ⑥ | 部署：Windows + Tailscale Personal 免费方案，waitress 仅 127.0.0.1:8000，Serve HTTPS，无 Funnel | 🔶 A 项实测通过 | Serve 生效、tailnet HTTPS 200、Funnel 关；B–G 待手机侧（§6） |
+| ⑦ | App 配置：DEBUG=LAN / PRODUCTION=Tailnet HTTPS，单一来源，远程配置，release 无 LAN/localhost | ✅ release 已构建 | 真实地址注入 + 产物字符串抽检通过（§7）；D/F/G 待真机 |
 | ⑧ | 安全：Key 仅服务端、限流、设备配额、并发闸、熔断、日志脱敏 | ✅ 完成 | `b8f6e50`；【代码测试】test_guard 13 + test_server_api 17 |
 | ⑨ | 隐私：默认不上传 GPS、应用内隐私声明 | ✅ 完成 | `7a9ae68` consent_screen 六条声明 |
 | ⑩ | 离线：选中路线全量入库、无网可看可跑、服务器宕机明确报错 | ✅ 代码完成 | `7a9ae68`；【真机测试】待飞行模式验证 |
@@ -188,20 +188,32 @@ CELL_M=25 ｜ MATCH_M=25 ｜ 跨度 150–1200m ｜ 折返比 ≥0.5 ｜ 最小�
 
 | 项 | 内容 | 状态 |
 | --- | --- | --- |
-| A | PC 后端 + `tailscale serve --bg 8000` → 真实 HTTPS 地址 | ⏳ 待用户安装 |
-| B | 手机浏览器经 Tailnet 打开 `/api/health` | ⏳ |
-| C | 手机关 Wi-Fi（仅移动数据 + Tailscale）仍可达 | ⏳ |
-| D | 正式版 App 移动数据下生成真实路线 | ⏳（需 release APK） |
-| E | 手机与电脑无需同一校园网 | ⏳ |
+| A | PC 后端 + `tailscale serve --bg 8000` → 真实 HTTPS 地址 | ✅ **2026-11-04 实测通过**：地址 `https://your-device.your-tailnet.ts.net`（读取自 `tailscale status --json` Self.DnsName，MagicDNS=True）；`curl https://.../api/health` → **HTTP 200 (1.07s)** v0.5；443 仅监听 Tailscale IP（100.64.0.1 + fd7a:...，tailscaled PID）；`funnel status` = **tailnet only**（红线守住） |
+| B | 手机浏览器经 Tailnet 打开 `/api/health` | ⏳ 待用户手机操作（地址已下发） |
+| C | 手机关 Wi-Fi（仅移动数据 + Tailscale）仍可达 | ⏳ 待用户手机操作 |
+| D | 正式版 App 移动数据下生成真实路线 | ⏳ release APK 已构建（含真实地址，见 §7），待用户安装 |
+| E | 手机与电脑无需同一校园网 | ⏳（C 通过即同时证明） |
 | F | 电脑睡眠/后端停止 → App 明确中文报错；已存路线离线可看可跑 | ⏳ |
-| G | 重启电脑自动拉起后端 + Tailscale | ⏳ |
+| G | 重启电脑自动拉起后端 + Tailscale | ⏳（自启 VBS 已注册；Tailscale 安装器自启） |
 
-**地址纪律**：`setup_tailscale_serve.ps1` 从 `tailscale status --json` 读取真实 MagicDNS 名并打印构建命令——**绝不手工编造地址**；release APK 只在 A 项实测通过后构建。
+**A 项过程记录（如实）**：`setup_tailscale_serve.ps1` 首跑时 Serve 配置成功，但 HTTPS 验证
+超时——首次证书签发延迟所致；用 `tailscale cert <域名>` 显式签发成功后（证明控制台
+HTTPS Certificates 已开启），重跑脚本端到端通过（打印 ✅ 验证 + 构建命令）。
+诊断中 `tailscale cert` 在仓库根落盘的 .crt/.key 已**立即删除**（git 全程干净，
+密钥红线零触碰）。
+
+**地址纪律**：`https://your-device.your-tailnet.ts.net` 全程来自 `tailscale status --json`
+实测读取，无任何手工编造。
 
 ## 7. 【真机测试】Android 端
 
-**当前状态：未验证（debug APK 已构建，待用户安装）。**
+**当前状态：正式版 APK 已构建（含真实 Tailnet 地址），待用户安装执行 D/F/G。**
 
+- **release APK（正式）**：`build/app/outputs/flutter-apk/app-release.apk`（73.5MB，2026-11-04 17:02）
+  构建命令：`flutter build apk --release --dart-define=TAILNET_BASE_URL=https://your-device.your-tailnet.ts.net --dart-define=AMAP_ANDROID_KEY=<AndroidKey>`；
+  产物抽检（libapp.so 字符串）：`https://your-device.your-tailnet.ts.net` **存在** ✓、
+  局域网 IP `192.168.1.100` **不存在** ✓、`127.0.0.1` **不存在** ✓
+  （`localhost` 字面量存在仅为 `_validTailnet` 的**拒绝黑名单**，属设计内）；
 - `build/app/outputs/flutter-apk/app-debug.apk`（LAN 配置 `http://192.168.1.100:8000`，仅同校园网 debug 用）；
 - **release 构建链路已预验证**（2026-11-03，不含地址注入的干跑）：`√ Built app-release.apk (73.5MB)`，
   签名（android/key.properties 沿用）、R8、图标字体树摇全部通过——最终构建只剩注入真实
