@@ -1,0 +1,265 @@
+{
+ "request_body": {
+  "origin": {
+   "lng": 114.02829302767518,
+   "lat": 30.540181720662197
+  },
+  "polyline": [
+   [
+    114.029957,
+    30.540855
+   ],
+   [
+    114.030074,
+    30.540859
+   ],
+   [
+    114.030278,
+    30.540833
+   ],
+   [
+    114.030352,
+    30.540816
+   ],
+   [
+    114.030404,
+    30.540803
+   ],
+   [
+    114.030282,
+    30.540833
+   ],
+   [
+    114.030178,
+    30.540846
+   ],
+   [
+    114.030078,
+    30.540859
+   ],
+   [
+    114.029874,
+    30.540855
+   ],
+   [
+    114.029323,
+    30.540833
+   ],
+   [
+    114.028624,
+    30.540794
+   ],
+   [
+    114.02862,
+    30.54079
+   ],
+   [
+    114.028793,
+    30.540135
+   ],
+   [
+    114.028793,
+    30.540135
+   ],
+   [
+    114.028893,
+    30.539744
+   ],
+   [
+    114.028798,
+    30.54013
+   ],
+   [
+    114.028798,
+    30.54013
+   ],
+   [
+    114.028624,
+    30.54079
+   ],
+   [
+    114.02862,
+    30.54079
+   ],
+   [
+    114.029319,
+    30.540833
+   ],
+   [
+    114.029957,
+    30.540855
+   ]
+  ],
+  "along_m": 300.0,
+  "target_m": 1000,
+  "completed_m": 300.0,
+  "heading": 120.0,
+  "tol_m": 500,
+  "max_api_calls": 5
+ },
+ "response": {
+  "api_calls": 5,
+  "candidates_evaluated": [
+   {
+    "along_m": 481.2,
+    "connector_m": 145.0,
+    "error": null,
+    "estimated_total_m": 546.2,
+    "extra_m": -36.2,
+    "lat": 30.540807,
+    "lng": 114.028902,
+    "ok": true,
+    "score": -12.2,
+    "skipped_m": 181.2,
+    "turns": 2,
+    "within_tolerance": true
+   },
+   {
+    "along_m": 531.8,
+    "connector_m": 196.0,
+    "error": null,
+    "estimated_total_m": 546.6,
+    "extra_m": -35.8,
+    "lat": 30.540837,
+    "lng": 114.029429,
+    "ok": true,
+    "score": -11.8,
+    "skipped_m": 231.8,
+    "turns": 2,
+    "within_tolerance": true
+   },
+   {
+    "along_m": 582.4,
+    "connector_m": 246.0,
+    "error": null,
+    "estimated_total_m": 546.0,
+    "extra_m": -36.4,
+    "lat": 30.540855,
+    "lng": 114.029957,
+    "ok": true,
+    "score": -12.4,
+    "skipped_m": 282.4,
+    "turns": 2,
+    "within_tolerance": true
+   },
+   {
+    "along_m": 380.0,
+    "connector_m": 45.0,
+    "error": null,
+    "estimated_total_m": 547.4,
+    "extra_m": -35.0,
+    "lat": 30.540143,
+    "lng": 114.028795,
+    "ok": true,
+    "score": -23.0,
+    "skipped_m": 80.0,
+    "turns": 1,
+    "within_tolerance": true
+   },
+   {
+    "along_m": 430.6,
+    "connector_m": 95.0,
+    "error": null,
+    "estimated_total_m": 546.8,
+    "extra_m": -35.6,
+    "lat": 30.540587,
+    "lng": 114.028678,
+    "ok": true,
+    "score": -23.6,
+    "skipped_m": 130.6,
+    "turns": 1,
+    "within_tolerance": true
+   }
+  ],
+  "connector": {
+   "distance_m": 95.0,
+   "duration_s": 76.0,
+   "polyline": [
+    [
+     114.028346,
+     30.540017
+    ],
+    [
+     114.028793,
+     30.54013
+    ],
+    [
+     114.028676,
+     30.540586
+    ]
+   ],
+   "steps": [
+    {
+     "action": "left",
+     "cumulative_m": 44.0,
+     "distance_m": 44.0,
+     "instruction": "从起点出发，沿当前道路跑约 44 米，然后前方路口左转",
+     "junction": [
+      114.028793,
+      30.54013
+     ],
+     "orientation": "",
+     "polyline": [],
+     "road": "",
+     "text": "从起点出发，沿当前道路跑约 44 米，然后前方路口左转",
+     "turn": "left"
+    },
+    {
+     "action": "end",
+     "cumulative_m": 95.0,
+     "distance_m": 51.0,
+     "instruction": "继续沿当前道路跑约 51 米，到达起点（本圈结束）",
+     "junction": [
+      114.028676,
+      30.540586
+     ],
+     "orientation": "",
+     "polyline": [],
+     "road": "",
+     "text": "继续沿当前道路跑约 51 米，到达起点（本圈结束）",
+     "turn": "end"
+    }
+   ]
+  },
+  "elapsed_s": 0.69,
+  "estimated_total_m": 546.8,
+  "merged_remaining_polyline": [
+   [
+    114.028346,
+    30.540017
+   ],
+   [
+    114.028793,
+    30.54013
+   ],
+   [
+    114.028678,
+    30.540587
+   ],
+   [
+    114.028624,
+    30.54079
+   ],
+   [
+    114.029319,
+    30.540833
+   ],
+   [
+    114.029957,
+    30.540855
+   ]
+  ],
+  "rejoin": {
+   "along_m": 430.6,
+   "lat": 30.540587,
+   "lng": 114.028678,
+   "skipped_m": 130.6
+  },
+  "remaining_m": 246.8,
+  "reroute_id": "rr-ccbf79a85c",
+  "success": true,
+  "target_m": 1000.0,
+  "tol_m": 500.0,
+  "within_tolerance": true
+ }
+}
