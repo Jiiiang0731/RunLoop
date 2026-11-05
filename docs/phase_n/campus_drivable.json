@@ -1,0 +1,172 @@
+{
+ "anchors": [
+  [
+   114.027494,
+   30.53504
+  ],
+  [
+   114.027651,
+   30.532929
+  ],
+  [
+   114.026649,
+   30.530919
+  ],
+  [
+   114.027056,
+   30.529165
+  ],
+  [
+   114.030188,
+   30.527506
+  ],
+  [
+   114.032443,
+   30.526696
+  ],
+  [
+   114.034197,
+   30.528436
+  ],
+  [
+   114.031535,
+   30.530838
+  ],
+  [
+   114.029966,
+   30.533269
+  ],
+  [
+   114.030107,
+   30.535383
+  ],
+  [
+   114.027494,
+   30.53504
+  ]
+ ],
+ "legs": [
+  {
+   "leg": 1,
+   "walking_m": 238.0,
+   "driving_m": 238.0,
+   "driving_err": null,
+   "ratio": 1.0,
+   "walk_steps": 1,
+   "walk_actions": [],
+   "roads": [
+    "进喜路"
+   ]
+  },
+  {
+   "leg": 2,
+   "walking_m": 242.0,
+   "driving_m": 244.0,
+   "driving_err": null,
+   "ratio": 1.0082644628099173,
+   "walk_steps": 1,
+   "walk_actions": [],
+   "roads": [
+    "进喜路"
+   ]
+  },
+  {
+   "leg": 3,
+   "walking_m": 209.0,
+   "driving_m": 210.0,
+   "driving_err": null,
+   "ratio": 1.0047846889952152,
+   "walk_steps": 3,
+   "walk_actions": [
+    "向右前方行走",
+    "右转"
+   ],
+   "roads": []
+  },
+  {
+   "leg": 4,
+   "walking_m": 424.0,
+   "driving_m": 424.0,
+   "driving_err": null,
+   "ratio": 1.0,
+   "walk_steps": 5,
+   "walk_actions": [
+    "右转",
+    "左转",
+    "左转",
+    "右转"
+   ],
+   "roads": []
+  },
+  {
+   "leg": 5,
+   "walking_m": 235.0,
+   "driving_m": 236.0,
+   "driving_err": null,
+   "ratio": 1.004255319148936,
+   "walk_steps": 1,
+   "walk_actions": [],
+   "roads": []
+  },
+  {
+   "leg": 6,
+   "walking_m": 273.0,
+   "driving_m": 273.0,
+   "driving_err": null,
+   "ratio": 1.0,
+   "walk_steps": 1,
+   "walk_actions": [],
+   "roads": []
+  },
+  {
+   "leg": 7,
+   "walking_m": 404.0,
+   "driving_m": 404.0,
+   "driving_err": null,
+   "ratio": 1.0,
+   "walk_steps": 1,
+   "walk_actions": [],
+   "roads": []
+  },
+  {
+   "leg": 8,
+   "walking_m": 322.0,
+   "driving_m": 324.0,
+   "driving_err": null,
+   "ratio": 1.0062111801242235,
+   "walk_steps": 2,
+   "walk_actions": [
+    "右转"
+   ],
+   "roads": []
+  },
+  {
+   "leg": 9,
+   "walking_m": 238.0,
+   "driving_m": 239.0,
+   "driving_err": null,
+   "ratio": 1.004201680672269,
+   "walk_steps": 1,
+   "walk_actions": [],
+   "roads": []
+  },
+  {
+   "leg": 10,
+   "walking_m": 402.0,
+   "driving_m": 1273.0,
+   "driving_err": null,
+   "ratio": 3.1666666666666665,
+   "walk_steps": 4,
+   "walk_actions": [
+    "右转",
+    "右转",
+    "左转"
+   ],
+   "roads": [
+    "进喜路"
+   ]
+  }
+ ],
+ "drivable": 10,
+ "walk_total_m": 2987.0
+}

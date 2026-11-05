@@ -17,6 +17,10 @@ class PlanStep:
     action: str = ""
     orientation: str = ""
     polyline: List[GeoPoint] = field(default_factory=list)
+    # 阶段 N：高德步行 steps 的 walk_type 真实字段（0 普通道路 / 1 人行横道 /
+    # 3 地下通道 / 4 过街天桥 / 5 地铁通道 / 6 公园 / 7 广场 / 8 扶梯 /
+    # 9 直梯 / 10 索道 / 11 空中通道）。用于识别不适合跑步的路段。
+    walk_type: str = ""
 
 
 @dataclass

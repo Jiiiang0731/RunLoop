@@ -58,6 +58,21 @@ class TestNavMetrics(unittest.TestCase):
         m = analyze_route(steps, a + b[1:] + c[1:], 100)
         self.assertGreaterEqual(m["short_consecutive"], 1)
 
+    def test_walk_bad_ratio_from_walk_type(self):
+        """阶段 N：真实 walk_type 统计——地下通道/天桥等不适合跑步的路段占比。"""
+        a = _line((121.0, 31.0), (121.0002, 31.0))        # ~19m 普通道路
+        b = _line((121.0002, 31.0), (121.0002, 31.0002))  # ~22m 地下通道
+        steps = [
+            PlanStep(road="A", distance_m=19, polyline=a, walk_type="0"),
+            PlanStep(road="B", distance_m=22, polyline=b, walk_type="3"),
+        ]
+        m = analyze_route(steps, a + b[1:], 100)
+        self.assertAlmostEqual(m["walk_bad_ratio"], 22 / 41, places=2)
+        self.assertEqual(m["walk_types"], {"0": 1, "3": 1})
+
+        clean = [PlanStep(road="A", distance_m=19, polyline=a, walk_type="0")]
+        self.assertEqual(analyze_route(clean, a, 100)["walk_bad_ratio"], 0.0)
+
 
 if __name__ == "__main__":
     unittest.main()

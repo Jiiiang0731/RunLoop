@@ -65,6 +65,7 @@ def _parse_steps(raw_steps) -> List[PlanStep]:
             action=str(s.get("action") or ""),
             orientation=str(s.get("orientation") or ""),
             polyline=_parse_polyline(s.get("polyline") or ""),
+            walk_type=str(s.get("walk_type") or ""),
         ))
     return out
 

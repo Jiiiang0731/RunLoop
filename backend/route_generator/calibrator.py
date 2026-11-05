@@ -37,6 +37,10 @@ EARLY_MAX_DENSITY = 1.5
 # 单变体连续规划失败（路网不可达等）达到该次数则放弃该变体
 _MAX_BUILD_FAILS_PER_VARIANT = 2
 
+# 阶段 N：不适合跑步的路段（地下通道/过街天桥/扶梯/台阶等，来自 walk_type）
+# 占里程超过该比例时，该闭环不参与「最优」选择（仅在无其他候选时兜底）。
+MAX_WALK_BAD_RATIO = 0.15
+
 
 def tight_tolerance(tol_m: float, target_m: int) -> float:
     """内部「够好了」阈值（阶段 N）。
@@ -157,19 +161,27 @@ def calibrate(planner: MapPlanner, start: GeoPoint, target_m: int, n_points: int
             samples.append((R, loop.distance_m))
             metrics = _loop_metrics(loop, target_m)
             score = score_route(target_m, loop, metrics).total
+            bad_share = float(metrics.get("walk_bad_ratio", 0.0))
+            too_bad = bad_share > MAX_WALK_BAD_RATIO
             history.append({
                 "variant": v.label, "iter": it, "R": round(R, 1),
                 "distance": round(loop.distance_m, 1), "err": round(e, 1),
                 "closure_m": loop.closure_m, "score": score,
                 "turns": metrics.get("turns"), "density": metrics.get("turn_density"),
+                "walk_bad": bad_share,
             })
-            if _is_better(e, score, best_err, best_score, tol_m):
+            if too_bad:
+                # 大量台阶/地下通道/天桥：不参与最优选择，只在没有更好候选时兜底
+                history.append({"variant": v.label, "iter": it,
+                                "event": "walk_bad_reject", "walk_bad": bad_share})
+            if (not too_bad or best is None) and \
+                    _is_better(e, score, best_err, best_score, tol_m):
                 best, best_err, best_score, best_metrics = loop, e, score, metrics
                 best_variant, best_R = v, R
-            if _should_stop_early(e, score, metrics, tight):
+            if not too_bad and _should_stop_early(e, score, metrics, tight):
                 stopped_early = True
                 break
-            if abs(e) <= tight:
+            if not too_bad and abs(e) <= tight:
                 # 已进入内部目标带（5%·目标）：质量提升交给后续骨架变体。
                 break
             factor = target_m / max(loop.distance_m, 1.0)
