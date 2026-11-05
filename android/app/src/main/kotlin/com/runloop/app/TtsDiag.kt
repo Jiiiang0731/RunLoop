@@ -177,10 +177,12 @@ class TtsDiag(private val context: Context) {
     private fun pmQueryEngines(): List<Map<String, Any?>> {
         val intent = Intent(TextToSpeech.Engine.INTENT_ACTION_TTS_SERVICE)
         val services = context.packageManager.queryIntentServices(intent, 0)
-        return services.map {
+        return services.mapNotNull { ri ->
+            // ResolveInfo 无 package 属性：包名在 serviceInfo.packageName
+            val pkg = ri.serviceInfo?.packageName ?: return@mapNotNull null
             mapOf(
-                "label" to (it.loadLabel(context.packageManager)?.toString() ?: it.`package`),
-                "pkg" to it.`package`,
+                "label" to (ri.loadLabel(context.packageManager)?.toString() ?: pkg),
+                "pkg" to pkg,
             )
         }
     }
