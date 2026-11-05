@@ -70,6 +70,35 @@ Future<BitmapDescriptor> createArrowIcon(Color color, {bool open = false}) async
   return BitmapDescriptor.fromBytes(data!.buffer.asUint8List());
 }
 
+/// 转弯标记图标（阶段 N，任务书 6.4）：白色小圆底 + 深色转弯字形
+/// （左转/右转/掉头）。尺寸克制，只标真实转弯位置，不遮挡路线主体。
+Future<BitmapDescriptor> createTurnMarkerIcon(IconData icon, Color color) async {
+  const double size = 38;
+  final ui.PictureRecorder recorder = ui.PictureRecorder();
+  final Canvas canvas = Canvas(recorder);
+  const Offset c = Offset(size / 2, size / 2);
+  canvas.drawCircle(c, size / 2 - 2, Paint()..color = const Color(0x33000000));
+  canvas.drawCircle(c, size / 2 - 4.5, Paint()..color = Colors.white);
+  final TextPainter tp = TextPainter(
+    textDirection: TextDirection.ltr,
+    text: TextSpan(
+      text: String.fromCharCode(icon.codePoint),
+      style: TextStyle(
+        fontSize: 21,
+        fontFamily: icon.fontFamily,
+        package: icon.fontPackage,
+        color: color,
+      ),
+    ),
+  )..layout();
+  tp.paint(canvas, Offset((size - tp.width) / 2, (size - tp.height) / 2));
+  final ui.Image image =
+      await recorder.endRecording().toImage(size.toInt(), size.toInt());
+  final ByteData? data = await image.toByteData(format: ui.ImageByteFormat.png);
+  image.dispose();
+  return BitmapDescriptor.fromBytes(data!.buffer.asUint8List());
+}
+
 /// 去/返转弯标注图标（阶段 M-F 6.2 重设计）：不再使用「圆圈包裹的人字形」，
 /// 改为柔和半透明白色衬底 + 粗圆头人字形——轻量现代，与实心方向箭头
 /// 形态区分明确；颜色语义保留（去=青 / 返=紫），配合 [Marker.rotation]

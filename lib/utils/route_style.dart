@@ -45,14 +45,27 @@ class RouteStyle {
   static const double completedWidth = 2.4;
   static const double zCompleted = 8;
 
-  // ---------- 线宽（dp）——阶段 K 细线化 ----------
-  static const double coreWidth = 2.8;
-  static const double casingWidth = 4.6;
-  static const double unselectedWidth = 2.0;
-  static const double growthCoreWidth = 2.8;
-  static const double growthCasingWidth = 4.6;
-  static const double trackCoreWidth = 3.4;
-  static const double trackCasingWidth = 5.2;
+  // ---------- 线宽（dp）——阶段 N：类高德导航的醒目粗线 ----------
+  // 用户明确：路线必须是画面中最容易识别的元素；2.8dp 细线在真机上
+  // 「不像正式导航」。主线 7.0dp + 白描边 10.5dp（保留 3.5dp 白边）。
+  static const double coreWidth = 7.0;
+  static const double casingWidth = 10.5;
+  static const double unselectedWidth = 4.0;
+  static const double growthCoreWidth = 7.0;
+  static const double growthCasingWidth = 10.5;
+  static const double trackCoreWidth = 4.6;
+  static const double trackCasingWidth = 7.0;
+
+  // ---------- 去返程并排双轨（阶段 N，任务书 6.3） ----------
+  /// 两条轨道相对中心线的像素偏移（配合 metersPerPixel 换算成米，
+  /// 仅影响显示；canonical 与 GPS 记录绝不修改）。
+  static const double dualTrackOffsetPx = 7.0;
+
+  /// 遮断中心线的白线宽度：主线宽 + 3dp，保证中间留出清晰缝隙。
+  static const double dualTrackEraseWidth = coreWidth + 3.0;
+  static const double zDualErase = 21;
+  static const double zDualCasing = 22;
+  static const double zDualCore = 23;
 
   // ---------- 描边颜色（轻描边：80% 白） ----------
   static const Color casingColor = Color(0xCCFFFFFF);

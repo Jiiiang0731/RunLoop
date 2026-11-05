@@ -21,10 +21,12 @@ import '../services/nav/tts_service.dart';
 import '../services/nav/voice_log.dart';
 import '../services/route_api/reroute_api.dart';
 import '../services/run_recorder/run_recorder.dart';
+import '../utils/dual_track.dart';
 import '../utils/geo.dart' hide haversineMeters;
 import '../utils/map_icons.dart';
 import '../utils/route_path.dart';
 import '../utils/route_style.dart';
+import '../utils/turn_annotations.dart' show metersPerPixel;
 import '../widgets/countdown_overlay.dart';
 import '../widgets/runner_arrow.dart';
 import 'run_summary_screen.dart';
@@ -148,6 +150,15 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
   Set<Polyline> _routeLineCache = <Polyline>{};
   Set<Polyline> _connectorLineCache = <Polyline>{};
   Polyline? _canonicalRefLine;
+
+  /// 阶段 N：当前切片下的「剩余路线」点列（供双轨/箭头复算，只读）。
+  List<LatLng> _slicedRemaining = const <LatLng>[];
+
+  // ---- 阶段 N 视觉：导航页方向箭头 + 转弯标记图标 ----
+  BitmapDescriptor? _arrowIcon;
+  BitmapDescriptor? _turnLeftIcon;
+  BitmapDescriptor? _turnRightIcon;
+  BitmapDescriptor? _turnUTurnIcon;
 
   // ---- 动态重规划（阶段 M-D/E，任务书 5.1–5.8） ----
   /// 当前导航基准路径：初始 = 规划路线；重规划成功后原子切换为
@@ -281,11 +292,24 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
       final BitmapDescriptor start = await createStartIcon();
       final BitmapDescriptor dot =
           await createPositionDotIcon(const Color(0xFF1565C0));
+      // 阶段 N：导航页方向箭头 + 真实转弯标记
+      final BitmapDescriptor arrow =
+          await createArrowIcon(RouteStyle.arrowOutColor);
+      final BitmapDescriptor tl =
+          await createTurnMarkerIcon(Icons.turn_left, const Color(0xFF0D47A1));
+      final BitmapDescriptor tr =
+          await createTurnMarkerIcon(Icons.turn_right, const Color(0xFF0D47A1));
+      final BitmapDescriptor tu =
+          await createTurnMarkerIcon(Icons.u_turn_left, const Color(0xFFB71C1C));
       if (mounted) {
         setState(() {
           _runnerIcon = runner;
           _startIcon = start;
           _dotIcon = dot;
+          _arrowIcon = arrow;
+          _turnLeftIcon = tl;
+          _turnRightIcon = tr;
+          _turnUTurnIcon = tu;
         });
       }
     } catch (_) {
@@ -929,10 +953,58 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
           remaining = path.fromDistance(along);
         }
         _routeLineCache = _buildRouteLines(completed, remaining);
+        _slicedRemaining = remaining;
         _slicedAlong = along;
         _slicedGen = _routeGen;
       }
       lines.addAll(_routeLineCache);
+      // ---- 阶段 N：去返程并排双轨（任务书 6.3 硬性要求）----
+      // 折返段（同一物理道路的双向行程）先按中心线遮断，再把去/返两段
+      // 分别垂线偏移绘制，得到两条清晰分开、各带方向的轨道。
+      // 偏移仅用于显示：canonical 折线与 GPS 记录一个点都不改。
+      if (_slicedRemaining.length >= 8 && !_lastOffRoute) {
+        final List<FoldPass> folds = findFoldPasses(_slicedRemaining);
+        if (folds.isNotEmpty) {
+          final double mpp = metersPerPixel(
+              _cam.zoom ?? _zoomGoalFor(null), _slicedRemaining.first.latitude);
+          for (final FoldPass f in folds) {
+            lines.add(Polyline(
+              points: _slicedRemaining.sublist(f.outStart, f.backEnd + 1),
+              color: RouteStyle.casingColor,
+              width: RouteStyle.dualTrackEraseWidth,
+              capType: CapType.round,
+              joinType: JoinType.round,
+              zIndex: RouteStyle.zDualErase,
+            )..setIdForCopy('dual-erase-${f.outStart}'));
+          }
+          final List<DisplayTrack> tracks = buildDisplayTracks(
+              _slicedRemaining, folds,
+              metersPerPx: mpp, offsetPx: RouteStyle.dualTrackOffsetPx);
+          int ti = 0;
+          for (final DisplayTrack t in tracks) {
+            if (t.points.length < 2) continue;
+            lines.add(Polyline(
+              points: t.points,
+              color: RouteStyle.casingColor,
+              width: RouteStyle.casingWidth,
+              capType: CapType.round,
+              joinType: JoinType.round,
+              zIndex: RouteStyle.zDualCasing,
+            )..setIdForCopy('dual-casing-$ti'));
+            lines.add(Polyline(
+              points: t.points,
+              gradient: true,
+              colorList: RouteStyle.plannedGradient,
+              color: RouteStyle.plannedGradient.first,
+              width: RouteStyle.coreWidth,
+              capType: CapType.round,
+              joinType: JoinType.round,
+              zIndex: RouteStyle.zDualCore,
+            )..setIdForCopy('dual-core-$ti'));
+            ti++;
+          }
+        }
+      }
     }
     // ---- 重规划连接段（琥珀色，真实步行道路，5.6 connector 折线）----
     final List<LatLng>? connector = _connectorPts;
@@ -1048,6 +1120,54 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
         anchor: const Offset(0.5, 0.5),
         zIndex: 300,
       )..setIdForCopy('run-pos'));
+    }
+    // ---- 阶段 N：方向箭头（6.2）+ 真实转弯标记（6.4）----
+    if (_started && !_lastOffRoute && _activePath != null && _lastProj != null) {
+      final RoutePath path = _activePath!;
+      final double zoom = _cam.zoom ?? _zoomGoalFor(null);
+      // 箭头间距随缩放自适应：放大看清方向、缩小不拥挤
+      final double spacing = zoom >= 18 ? 220.0 : (zoom >= 16.5 ? 400.0 : 700.0);
+      if (_arrowIcon != null) {
+        double d = (_lastProj!.alongM / spacing).ceil() * spacing;
+        int i = 0;
+        while (d < path.total - 15 && i < 12) {
+          final RoutePosition rp = path.at(d);
+          markers.add(Marker(
+            position: rp.point,
+            rotation: rp.bearing,
+            icon: _arrowIcon!,
+            anchor: const Offset(0.5, 0.5),
+            zIndex: RouteStyle.zArrowMarker,
+          )..setIdForCopy('run-arrow-$i'));
+          i++;
+          d += spacing;
+        }
+      }
+      // 只标最近 3 个真实转弯（6.7 信息层级：不把地图贴满标签）
+      int t = 0;
+      for (final RouteStep s in _activeSteps) {
+        if (s.cumulativeM <= _lastProj!.alongM + 5 ||
+            s.cumulativeM > path.total - 10) {
+          continue;
+        }
+        final BitmapDescriptor? icon = switch (s.action) {
+          'left' => _turnLeftIcon,
+          'right' => _turnRightIcon,
+          'uturn' => _turnUTurnIcon,
+          _ => null,
+        };
+        if (icon == null) continue;
+        markers.add(Marker(
+          position: path.at(s.cumulativeM).point,
+          icon: icon,
+          anchor: const Offset(0.5, 0.5),
+          infoWindow: InfoWindow(
+              title: _turnNames[s.action] ?? '', snippet: s.road),
+          zIndex: RouteStyle.zTurnAnnotation,
+        )..setIdForCopy('run-turn-$t'));
+        t++;
+        if (t >= 3) break;
+      }
     }
     return markers;
   }
