@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:permission_handler/permission_handler.dart';
@@ -34,6 +36,11 @@ class _VoiceDiagnosticsScreenState extends State<VoiceDiagnosticsScreen> {
   List<VoiceLogEntry>? _lastSession;
   bool _showLastSession = false;
   PermissionStatus _bgLocation = PermissionStatus.denied;
+
+  // 锁屏语音自检：每 15s 真实朗读一次，共 8 次（约 2 分钟）。
+  Timer? _selfTestTimer;
+  bool _selfTestRunning = false;
+  int _selfTestCount = 0;
 
   @override
   void initState() {
@@ -200,6 +207,51 @@ class _VoiceDiagnosticsScreenState extends State<VoiceDiagnosticsScreen> {
     if (mounted) setState(() => _bgLocation = s);
   }
 
+  /// 锁屏语音自检：开始后请立即锁屏，等待约 2 分钟再解锁查看日志。
+  /// 每次朗读都会在 VoiceLog 留下 speak/start/done 或 6s/20s 看门狗错误，
+  /// 据此可区分「没提交」「提交没出声」「出声没播完」。
+  void _toggleSelfTest() {
+    if (_selfTestRunning) {
+      _selfTestTimer?.cancel();
+      _selfTestTimer = null;
+      setState(() => _selfTestRunning = false);
+      VoiceLog.instance.log(VoiceLogKind.system, 'diag',
+          detail: '锁屏语音自检已停止（已播 $_selfTestCount 次）');
+      return;
+    }
+    setState(() {
+      _selfTestRunning = true;
+      _selfTestCount = 0;
+    });
+    VoiceLog.instance.log(VoiceLogKind.system, 'diag',
+        detail: '锁屏语音自检开始：请立即锁屏，每 15s 播报一次，共 8 次');
+    void speakOnce() {
+      _selfTestCount++;
+      unawaited(_tts.speak(
+        '锁屏语音自检，第 $_selfTestCount 次。如果你听到这句话，说明锁屏语音正常。',
+        flush: true,
+      ));
+      if (_selfTestCount >= 8) {
+        _selfTestTimer?.cancel();
+        _selfTestTimer = null;
+        if (mounted) setState(() => _selfTestRunning = false);
+        VoiceLog.instance.log(VoiceLogKind.system, 'diag',
+            detail: '锁屏语音自检结束：请解锁后查看下方日志');
+      }
+    }
+    speakOnce();
+    _selfTestTimer = Timer.periodic(const Duration(seconds: 15), (_) {
+      if (!_selfTestRunning) return;
+      speakOnce();
+    });
+  }
+
+  @override
+  void dispose() {
+    _selfTestTimer?.cancel();
+    super.dispose();
+  }
+
   Future<void> _loadLastSession() async {
     final List<VoiceLogEntry> entries =
         await VoiceLog.instance.loadLastSession();
@@ -334,6 +386,49 @@ class _VoiceDiagnosticsScreenState extends State<VoiceDiagnosticsScreen> {
               trailing: FilledButton(
                 onPressed: _busy ? null : _testCurrent,
                 child: const Text('测试普通话'),
+              ),
+            ),
+          ),
+          const SizedBox(height: 8),
+          // ---- 2.5 锁屏语音自检 ----
+          Card(
+            color: _selfTestRunning ? Colors.orange.withAlpha(20) : null,
+            child: Padding(
+              padding: const EdgeInsets.all(14),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: <Widget>[
+                  Text('锁屏语音自检',
+                      style: Theme.of(context).textTheme.titleMedium),
+                  const SizedBox(height: 6),
+                  const Text(
+                    '开始后请立即锁屏并等待约 2 分钟：App 每 15 秒真实朗读一次，'
+                    '共 8 次。解锁后查看「语音执行日志」——每条会记录 '
+                    'speak → start → done；若只有 speak 没有 start，会写入 6 秒'
+                    '看门狗错误；若 start 后没有 done，会写入 20 秒看门狗错误。',
+                    style: TextStyle(fontSize: 12, color: Colors.grey),
+                  ),
+                  const SizedBox(height: 8),
+                  Row(
+                    children: <Widget>[
+                      FilledButton.tonalIcon(
+                        onPressed: _toggleSelfTest,
+                        icon: Icon(_selfTestRunning
+                            ? Icons.stop_circle
+                            : Icons.screen_lock_portrait),
+                        label: Text(_selfTestRunning
+                            ? '停止自检（已播 $_selfTestCount/8）'
+                            : '开始锁屏语音自检'),
+                      ),
+                      const SizedBox(width: 8),
+                      if (_selfTestRunning)
+                        const Text('现在可以锁屏',
+                            style: TextStyle(
+                                color: Colors.deepOrange,
+                                fontWeight: FontWeight.w600)),
+                    ],
+                  ),
+                ],
               ),
             ),
           ),

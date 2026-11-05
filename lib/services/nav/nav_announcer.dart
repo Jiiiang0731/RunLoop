@@ -9,22 +9,20 @@ abstract class NavVoiceConfig {
   double get announceM;
 }
 
-/// 普通话转弯播报状态机（阶段 L 模块 A，规范 2.2–2.4）。
+/// 普通话转弯播报状态机（P0 重写）。
 ///
-/// 数据源铁律：只使用服务端真实高德 steps（action/road/cumulativeM）与
-/// 窗口化地图匹配得到的沿路线里程 [alongM]，绝不根据地图箭头/视觉层猜测。
+/// 数据源铁律：只消费服务端统一 [RouteTurn]（真实折线累计里程 + 高德
+/// action + 几何交叉验证）。绝不根据地图箭头/屏幕方向/地图旋转再算左右。
 ///
-/// 规则：
-/// - 提前播报：距转弯 ≤ [NavVoiceConfig.announceM]（默认 50m）时一次；
-/// - 到位确认：越过转弯点前 8m 时「现在右转」一次；
-/// - 连续转弯合并：两转弯沿路间距 ≤ 80m → 单条「前方 X 米右转，随后约 Y 米左转」；
-/// - 直行步骤默认不打扰；仅当路名变化时播「沿 XX 路继续直行」（规范 2.3）；
-/// - 每步唯一标识（步骤下标 + 类型），正常只播一次；GPS 抖动（里程回跳）
-///   不会重复触发（集合去重 + 越界检测用上一里程）；
-/// - 偏航：进入时打断播报「已偏离规划路线」，期间静默并把越过的步骤标记为
-///   已播（回到路线不刷屏），回归时提示「已回到规划路线」；
-/// - 暂停即停、继续时重新武装下一条、结束立即清空；
-/// - 公里配速：排队不插队（转弯优先），过期（>15s）自动丢弃不积压。
+/// P0 关键修正：
+/// - **进度基准统一**：`atM` 是地图实际绘制折线的累计里程，与 RoutePath
+///   投影同一基准，不再出现「步骤里程 1076m / 折线 991m」导致的滞后；
+/// - **动态提前量**：`lead = max(用户设定, 实时配速 × 10s)`，上限 150m，
+///   跑得越快越早提示；
+/// - **错过即作废**：越过转弯点 >30m 后不再补播过期指令；
+/// - **两阶段**：提前播报 + 到位确认（越过前 8m），各自最多一次；
+/// - **低置信度降级**：方向冲突/接缝伪转弯时改为一般方向提醒，不编造左右；
+/// - 偏航、暂停、连续转弯、公里配速的既有语义保持不变。
 class NavAnnouncer {
   NavAnnouncer({
     required SpeechEngine engine,
@@ -42,8 +40,18 @@ class NavAnnouncer {
   /// 连续转弯合并窗口（米）。
   static const double combineWindowM = 80;
 
-  /// 到位确认触发线（米）：越过 cumulativeM - 8 即视为到达转弯点。
+  /// 到位确认触发线（米）：距转弯点 ≤8m 视为到达。
   static const double arrivalWindowM = 8;
+
+  /// 错过判定（米）：越过转弯点超过该距离即作废，绝不再补播。
+  static const double missedWindowM = 30;
+
+  /// 动态提前量：按配速预留的秒数。
+  static const double leadSeconds = 10;
+
+  /// 提前量上下限（米）。
+  static const double minLeadM = 25;
+  static const double maxLeadM = 150;
 
   /// 公里配速排队过期时间：超过即丢弃（不允许过期语音积压）。
   static const Duration kmExpiry = Duration(seconds: 15);
@@ -57,42 +65,59 @@ class NavAnnouncer {
     'uturn': '掉头',
   };
 
-  List<RouteStep> _steps = const <RouteStep>[];
+  List<RouteTurn> _turns = const <RouteTurn>[];
   final Set<String> _announced = <String>{};
   bool _offRoute = false;
   bool _paused = false;
-  double? _prevAlong;
   String? _pendingKmText;
   DateTime? _pendingKmAt;
   DateTime? _lastTurnAt;
-  String? _lastRoad;
 
   bool get offRoute => _offRoute;
 
-  /// 绑定路线 steps（开始跑步时调用）。
+  /// 当前使用的统一转弯事件（只读，供调试/诊断）。
+  List<RouteTurn> get turns => List<RouteTurn>.unmodifiable(_turns);
+
+  /// 绑定路线 steps（开始跑步时调用）。旧调用兼容：由结构化 action 派生
+  /// RouteTurn；新代码应优先调用 [attachTurns]。
   void attach(List<RouteStep> steps) {
-    _steps = steps;
+    attachTurns(deriveTurnsFromSteps(steps), steps: steps);
+  }
+
+  /// 绑定统一 TurnEvent（P0 主路径）。
+  void attachTurns(List<RouteTurn> turns, {List<RouteStep>? steps}) {
+    _turns = List<RouteTurn>.of(turns)
+      ..sort((RouteTurn a, RouteTurn b) => a.atM.compareTo(b.atM));
     _announced.clear();
     _offRoute = false;
     _paused = false;
-    _prevAlong = null;
     _pendingKmText = null;
     _lastTurnAt = null;
-    _lastRoad = null;
     _engine.onIdle = _onEngineIdle;
     if (!_config.voiceNav) return;
-    final String firstRoad =
-        steps.map((RouteStep s) => s.road).firstWhere((String r) => r.isNotEmpty, orElse: () => '');
-    // 阶段 M-B：「开始跑步」已由倒计时语音播报（CountdownOverlay），这里以
-    // QUEUE_ADD 排队衔接出发方向信息，避免同一句话播两遍（任务书 3.1）。
+    String firstRoad = '';
+    if (steps != null) {
+      firstRoad = steps
+          .map((RouteStep s) => s.road)
+          .firstWhere((String r) => r.isNotEmpty, orElse: () => '');
+    } else {
+      firstRoad = _turns
+          .map((RouteTurn t) => t.roadFrom)
+          .firstWhere((String r) => r.isNotEmpty, orElse: () => '');
+    }
+    // 「开始跑步」由倒计时播报；这里只排队出发方向，避免重复。
     _speak(firstRoad.isEmpty ? '出发' : '沿$firstRoad前进', flush: false);
   }
 
   /// 每次定位/匹配 tick 调用（约 1Hz）。
-  void onPosition({required double alongM, required bool offRoute}) {
-    final double prev = _prevAlong ?? alongM;
-    _prevAlong = alongM;
-
+  ///
+  /// [speedMps] 为当前 GPS 速度（米/秒）；有有效值时按「配速 × 10s」动态
+  /// 提前提示，无有效值时使用用户设定的固定提前量。
+  void onPosition({
+    required double alongM,
+    required bool offRoute,
+    double? speedMps,
+  }) {
     if (_paused) return;
 
     // ---- 偏航边沿 ----
@@ -110,78 +135,114 @@ class NavAnnouncer {
     if (!_config.voiceNav) return;
 
     if (offRoute) {
-      // 偏航期间静默，但把已越过的步骤标记为已播——回归后不刷屏。
-      for (int i = 0; i < _steps.length; i++) {
-        if (_steps[i].cumulativeM <= alongM) {
-          _announced.add('pre-$i');
-          _announced.add('now-$i');
+      // 偏航期间静默，但把已经越过的转弯标记为已播——回归后不补播旧指令。
+      for (final RouteTurn t in _turns) {
+        if (t.atM <= alongM + missedWindowM) {
+          _announced.add('pre-${t.id}');
+          _announced.add('now-${t.id}');
         }
       }
       return;
     }
 
-    // ---- 到位确认（越线检测，防 GPS 回跳重复触发） ----
-    for (int i = 0; i < _steps.length; i++) {
-      final RouteStep s = _steps[i];
-      final String? act = _actionText[s.action];
-      if (act == null) continue;
-      final double trigger = s.cumulativeM - arrivalWindowM;
-      if (prev < trigger && alongM >= trigger) {
-        if (_announced.add('now-$i')) _speakTurn('现在$act');
+    final double lead = _leadM(speedMps);
+    bool spokeThisTick = false;
+
+    // ---- 先处理已越过/到位，避免 GPS 跳点后补播过期指令 ----
+    for (final RouteTurn t in _turns) {
+      if (spokeThisTick) break;
+      if (t.kind == 'end') {
+        final double d = t.atM - alongM;
+        if (d <= 20 && d > -5 && _announced.add('end-${t.id}')) {
+          _speakTurn('已到达路线终点');
+          spokeThisTick = true;
+        }
+        continue;
+      }
+      if (!t.announce) continue;
+      final double remaining = t.atM - alongM;
+      if (t.isTurn) {
+        // 错过：越过 >30m，永久作废（绝不把过期路口当未来转弯）。
+        if (remaining < -missedWindowM) {
+          _announced.add('pre-${t.id}');
+          _announced.add('now-${t.id}');
+          continue;
+        }
+        if (remaining <= arrivalWindowM) {
+          if (!_announced.contains('now-${t.id}')) {
+            _announced.add('pre-${t.id}');
+            _announced.add('now-${t.id}');
+            final String? text = _nowText(t);
+            if (text != null) {
+              _speakTurn(text);
+              spokeThisTick = true;
+            }
+          }
+          continue;
+        }
+      } else if (t.kind == 'straight') {
+        if (remaining < -missedWindowM) {
+          _announced.add('pre-${t.id}');
+          continue;
+        }
+        if (remaining <= lead && remaining > -missedWindowM) {
+          if (_announced.add('pre-${t.id}')) {
+            final String road = t.roadTo.isNotEmpty ? t.roadTo : t.roadFrom;
+            if (road.isNotEmpty) {
+              _speakTurn('沿$road继续直行');
+              spokeThisTick = true;
+            }
+          }
+        }
+        continue;
       }
     }
 
-    // ---- 终点提示 ----
-    for (int i = 0; i < _steps.length; i++) {
-      if (_steps[i].action != 'end') continue;
-      final double d = _steps[i].cumulativeM - alongM;
-      if (d <= 20 && d > -5 && _announced.add('end-$i')) {
-        _speakTurn('已到达路线终点');
-      }
-    }
-
-    // ---- 提前播报（窗口内第一条未播步骤；每 tick 至多一条转弯语音） ----
-    for (int i = 0; i < _steps.length; i++) {
-      final RouteStep s = _steps[i];
-      final double remaining = s.cumulativeM - alongM;
+    // ---- 提前播报：窗口内最近的一条未播转弯（每 tick 至多一条）----
+    if (spokeThisTick) return;
+    for (int i = 0; i < _turns.length; i++) {
+      final RouteTurn t = _turns[i];
+      if (!t.announce || !t.isTurn) continue;
+      final double remaining = t.atM - alongM;
       if (remaining <= arrivalWindowM) continue; // 已到位/已过
-      if (remaining > _config.announceM) break; // steps 按里程升序，后面更远
-      if (_announced.contains('pre-$i')) continue; // 已处理，查窗口内下一条
+      if (remaining > lead) break; // 按里程升序，后面更远
+      if (_announced.contains('pre-${t.id}')) continue;
+      _announced.add('pre-${t.id}');
 
-      final String? act = _actionText[s.action];
-      if (act != null) {
-        // 检查紧随其后的第二转弯 → 合并播报
-        int? j;
-        for (int k = i + 1; k < _steps.length; k++) {
-          if (_actionText[_steps[k].action] == null) continue;
-          if (_steps[k].cumulativeM - s.cumulativeM <= combineWindowM) j = k;
-          break;
+      // 连续转弯合并：紧随其后的转弯 ≤80m 且置信度足够 → 一句话说完。
+      RouteTurn? next;
+      for (int k = i + 1; k < _turns.length; k++) {
+        if (!_turns[k].isTurn || !_turns[k].announce) continue;
+        if (_turns[k].atM - t.atM <= combineWindowM) {
+          next = _turns[k];
         }
-        final String roadPart = s.road.isNotEmpty ? '进入${s.road}' : '';
-        if (j != null) {
-          final RouteStep s2 = _steps[j];
-          final double d2 = s2.cumulativeM - s.cumulativeM;
-          final String road2 = s2.road.isNotEmpty ? '进入${s2.road}' : '';
-          _speakTurn('前方 ${_sayDist(remaining)}米$act$roadPart，'
-              '随后约 ${_sayDist(d2)}米${_actionText[s2.action]}$road2');
-          _announced.add('pre-$j');
-        } else {
-          _speakTurn('前方 ${_sayDist(remaining)}米$act$roadPart');
-        }
-        _announced.add('pre-$i');
-        break; // 本 tick 已播一条转弯语音
+        break;
       }
 
-      if (s.action == 'straight') {
-        // 直行只在路名变化时提示一次（规范 2.3：不反复打扰）。
-        if (s.road.isNotEmpty && s.road != _lastRoad) {
-          _speakTurn('沿${s.road}继续直行');
-          _lastRoad = s.road;
-        }
-        _announced.add('pre-$i'); // 静默场景也标记，防每 tick 重查
-        continue; // 窗口内若还有转弯，继续检查
+      if (t.confidence == 'low') {
+        // 方向不可靠：降级为一般提醒，绝不编造左右。
+        _speakTurn('前方有路口，请按地图路线方向行进');
+        return;
       }
-      _announced.add('pre-$i'); // end 等：不在提前窗口播报
+      final String act = _actionText[t.kind]!;
+      final String road = t.roadTo.isNotEmpty ? t.roadTo : t.roadFrom;
+      final String roadPart = road.isNotEmpty ? '进入$road' : '';
+      if (next != null &&
+          next.confidence != 'low' &&
+          next.kind != 'uturn' &&
+          !_announced.contains('pre-${next.id}')) {
+        final double d2 = next.atM - t.atM;
+        final String act2 = _actionText[next.kind]!;
+        final String road2 =
+            next.roadTo.isNotEmpty ? next.roadTo : next.roadFrom;
+        final String roadPart2 = road2.isNotEmpty ? '进入$road2' : '';
+        _announced.add('pre-${next.id}');
+        _speakTurn('前方 ${_sayDist(remaining)}米$act$roadPart，'
+            '随后约 ${_sayDist(d2)}米$act2$roadPart2');
+      } else {
+        _speakTurn('前方 ${_sayDist(remaining)}米$act$roadPart');
+      }
+      return;
     }
   }
 
@@ -197,57 +258,56 @@ class NavAnnouncer {
     }
   }
 
-  /// 暂停：立即停止一切播报（规范 2.4#5）。
+  /// 暂停：立即停止一切播报。
   void onPause() {
     _paused = true;
     _pendingKmText = null;
     _engine.stop();
   }
 
-  /// 继续：重新武装下一条转弯，恢复正确进度（规范 2.4#6）。
+  /// 继续：重新武装下一条转弯，恢复正确进度。
   void onResume({required double alongM}) {
     _paused = false;
-    for (int i = 0; i < _steps.length; i++) {
-      if (_steps[i].cumulativeM - alongM > arrivalWindowM) {
-        _announced.remove('pre-$i'); // 暂停期间可能错过了窗口内播报
+    for (final RouteTurn t in _turns) {
+      if (!t.isTurn) continue;
+      if (t.atM - alongM > arrivalWindowM) {
+        // 暂停期间可能错过了窗口内播报 → 只重新武装“提前提醒”，
+        // “到位确认”仍由越线逻辑负责，避免恢复瞬间重复喊两条。
+        _announced.remove('pre-${t.id}');
         break;
       }
     }
   }
 
-  /// 结束跑步：立即停止并清空（规范 2.4#7）。
+  /// 结束跑步：立即停止并清空。
   void onEnd() {
     _pendingKmText = null;
+    _pendingKmAt = null;
     _engine.onIdle = null;
     _engine.stop();
   }
 
-  // ---------- 动态重规划衔接（阶段 M-D/E，任务书 5.3/5.8） ----------
+  // ---------- 动态重规划衔接（阶段 M-D/E） ----------
 
   /// 偏航确认：立即停播旧路线的一切语音并清空待发队列。
-  /// 旧步骤播报绝不再发出（5.3#1/#2/#5）；GPS 与里程继续由记录器采集。
   void suspendForReroute() {
     _paused = true;
     _pendingKmText = null;
     _pendingKmAt = null;
-    _engine.onIdle = null; // 掐断「空闲回调插播公里配速」路径
-    _engine.stop(); // 清空 TTS 队列——过期旧提示绝不播放
+    _engine.onIdle = null;
+    _engine.stop();
   }
 
-  /// 重规划成功后原子绑定新版本 steps（5.4#9/#10、5.8）。
-  ///
-  /// 旧步骤 ID、已播集合、待发队列全部作废；[announcement] 用 flush
-  /// 立即播报（打断残留语音），随后按新步骤正常提前播报下一条转弯。
-  void rebind(List<RouteStep> steps, {String? announcement}) {
-    _steps = steps;
+  /// 重规划成功后原子绑定新版本 turns（旧事件/已播集合/待发队列全部作废）。
+  void rebindTurns(List<RouteTurn> turns, {String? announcement}) {
+    _turns = List<RouteTurn>.of(turns)
+      ..sort((RouteTurn a, RouteTurn b) => a.atM.compareTo(b.atM));
     _announced.clear();
     _offRoute = false;
     _paused = false;
-    _prevAlong = null;
     _pendingKmText = null;
     _pendingKmAt = null;
     _lastTurnAt = null;
-    _lastRoad = null;
     _engine.onIdle = _onEngineIdle;
     if (!_config.voiceNav) return;
     if (announcement != null && announcement.isNotEmpty) {
@@ -255,7 +315,28 @@ class NavAnnouncer {
     }
   }
 
+  /// 旧调用兼容：由 steps 派生后重绑。
+  void rebind(List<RouteStep> steps, {String? announcement}) {
+    rebindTurns(deriveTurnsFromSteps(steps), announcement: announcement);
+  }
+
   // ---------- 内部 ----------
+
+  /// 动态提前量：无有效配速时使用用户设定；有配速时至少预留 10 秒。
+  double _leadM(double? speedMps) {
+    final double user = _config.announceM.clamp(minLeadM, maxLeadM);
+    if (speedMps == null || speedMps.isNaN || speedMps <= 0.3) {
+      return user;
+    }
+    final double bySpeed = speedMps * leadSeconds;
+    return bySpeed.clamp(user, maxLeadM);
+  }
+
+  String? _nowText(RouteTurn t) {
+    if (t.confidence == 'low') return '现在通过路口，请按地图路线行进';
+    final String? act = _actionText[t.kind];
+    return act == null ? null : '现在$act';
+  }
 
   void _speakTurn(String text) {
     _lastTurnAt = _clock();

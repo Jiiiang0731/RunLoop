@@ -10,6 +10,7 @@ import '../models/km_split.dart';
 import '../models/planned_route.dart';
 import '../models/run_record.dart';
 import '../models/track_point.dart';
+import '../services/location/location_service.dart';
 import '../services/nav/compass_source.dart';
 import '../services/nav/follow_camera.dart';
 import '../services/nav/foreground_run_service.dart';
@@ -17,6 +18,7 @@ import '../services/nav/heading_controller.dart';
 import '../services/nav/nav_announcer.dart';
 import '../services/nav/nav_settings.dart';
 import '../services/nav/nav_state.dart';
+import '../services/nav/tts_diagnostics.dart';
 import '../services/nav/tts_service.dart';
 import '../services/nav/voice_log.dart';
 import '../services/route_api/reroute_api.dart';
@@ -28,6 +30,7 @@ import '../utils/route_path.dart';
 import '../utils/route_style.dart';
 import '../utils/turn_annotations.dart' show metersPerPixel;
 import '../widgets/countdown_overlay.dart';
+import '../widgets/end_run_dialog.dart';
 import '../widgets/runner_arrow.dart';
 import 'run_summary_screen.dart';
 
@@ -98,6 +101,9 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
 
   bool _ending = false;
 
+  /// P0：结束二次确认弹窗是否已打开（防连续点击弹出多个/重复保存）。
+  bool _endDialogOpen = false;
+
   // ---- 阶段 N：实时导航 tick（锁屏/后台可用）----
   /// 旧实现把「地图匹配 / 偏航状态机 / 语音播报 / 公里分段 / 目标播报」
   /// 全部放在 build() 里；而 Flutter 在 AppLifecycleState.paused 时
@@ -110,6 +116,7 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
   Timer? _navTickTimer;
   DateTime? _lastNavTickAt;
   int _heartbeatSec = 0;
+  final NativeTtsDiagnostics _nativeDiag = NativeTtsDiagnostics();
 
   // ---- 倒计时（模块 C）----
   bool _showCountdown = true;
@@ -170,6 +177,9 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
   /// 当前有效 steps（重规划后 = 连接段 steps + 原剩余 steps 重定基）。
   List<RouteStep> _activeSteps = const <RouteStep>[];
 
+  /// P0：当前有效统一转弯事件。地图图标/顶部提示/TTS 全部只消费这一份。
+  List<RouteTurn> _activeTurns = const <RouteTurn>[];
+
   final NavStateMachine _navState = NavStateMachine();
   final RerouteClient _rerouteClient = RerouteClient();
 
@@ -224,6 +234,9 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
       _activePath = _plannedPath;
       _activePts = _plannedPts;
       _activeSteps = route.steps;
+      _activeTurns = route.turns.isNotEmpty
+          ? route.turns
+          : deriveTurnsFromSteps(route.steps);
     }
     // 注意：不在这里 start()——倒计时 GO 时刻才开始计时（规范 4.2）。
     // 相机目标由 build 中的 _onMatched 驱动（1Hz），渲染由 _camTimer（20Hz）驱动。
@@ -326,21 +339,29 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
     if (_started) return;
     _started = true;
     _recorder.start();
-    _announcer.attach(widget.plannedRoute?.steps ?? const <RouteStep>[]);
+    // P0：绑定统一 TurnEvent；steps 仅用于出发道路名兼容。
+    _announcer.attachTurns(
+      _activeTurns,
+      steps: widget.plannedRoute?.steps ?? const <RouteStep>[],
+    );
     unawaited(_startForeground());
     _beginNavCamera();
   }
 
   Future<void> _startForeground() async {
+    // 先启动前台服务：GO 瞬间 App 仍在前台，满足 Android 12+“后台禁止
+    // 启动 FGS”的限制；通知权限弹窗不能插在中间阻塞启动。
+    final bool ok = await ForegroundRunService.start();
+    VoiceLog.instance.log(VoiceLogKind.fgs, 'run',
+        detail: ok
+            ? '前台服务已启动（location 型 + WakeLock）'
+            : '前台服务启动失败！锁屏后可能被系统冻结');
     try {
-      // Android 13+：通知权限（无权限时 FGS 仍运行，只是通知不可见）。
+      // Android 13+：只影响通知是否可见，不影响 FGS 存活。
       await Permission.notification.request();
     } catch (_) {
       // 权限失败不阻断跑步。
     }
-    final bool ok = await ForegroundRunService.start();
-    VoiceLog.instance.log(VoiceLogKind.fgs, 'run',
-        detail: ok ? '前台服务已启动（location 型 + WakeLock）' : '前台服务启动失败！锁屏后可能被系统冻结');
   }
 
   void _onCountdownCancel() {
@@ -515,7 +536,16 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
   }
 
   Future<void> _end() async {
-    VoiceLog.instance.log(VoiceLogKind.system, 'run', detail: '结束运动');
+    // 防重复：确认弹窗打开期间 / 已进入结束流程，连续点击不再触发。
+    if (_ending || _endDialogOpen) return;
+    _endDialogOpen = true;
+    final bool confirmed = await showEndRunConfirmDialog(context);
+    _endDialogOpen = false;
+    if (!confirmed || !mounted || _ending) return;
+
+    // 只有用户明确确认后，才停止 GPS/计时/语音并保存。
+    _ending = true;
+    VoiceLog.instance.log(VoiceLogKind.system, 'run', detail: '结束运动（已二次确认）');
     _announcer.onEnd(); // 立即停止并清空语音（规范 2.4#7）
     await ForegroundRunService.stop(); // 释放前台服务、通知、WakeLock
     await VoiceLog.instance.saveSession(); // 本次会话日志留档（诊断页可回看）
@@ -525,7 +555,6 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
       Navigator.pop(context);
       return;
     }
-    setState(() => _ending = true);
     Navigator.pushReplacement(
       context,
       MaterialPageRoute<void>(
@@ -558,8 +587,31 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
   ///
   /// 事件循环（定位流回调、定时器）不依赖 Flutter 出帧，因此在
   /// `AppLifecycleState.paused` 下仍会运行——这正是锁屏后语音能继续的前提。
-  /// 每 30s 写一条心跳日志（含点数/公里/FGS 状态），真机可据此证明
-  /// 锁屏期间逻辑仍在跑（VoiceLog「tick 心跳」条目）。
+  /// 每 30s 写一条心跳日志（含点数/公里/FGS/屏幕/GPS 新鲜度/TTS 状态），
+  /// 真机可据此区分锁屏静音的具体失败点（VoiceLog「tick 心跳」条目）。
+  Future<void> _logHeartbeat() async {
+    final DateTime? gpsAt = LocationService.instance.lastCallbackAt;
+    final int gpsAge = gpsAt == null
+        ? -1
+        : DateTime.now().difference(gpsAt).inSeconds;
+    final Map<String, dynamic> power = await _nativeDiag.powerState();
+    final String screen = power.containsKey('screenOn')
+        ? '${power['screenOn']}'
+        : '?(${power['error'] ?? 'n/a'})';
+    final String idle = power.containsKey('deviceIdleMode')
+        ? '${power['deviceIdleMode']}'
+        : '?';
+    VoiceLog.instance.log(VoiceLogKind.fgs, 'tick',
+        detail: '心跳 n=${_recorder.pointCount} '
+            'km=${(_recorder.distanceMeters / 1000).toStringAsFixed(2)} '
+            'fgs=${ForegroundRunService.running} '
+            'gpsAge=${gpsAge}s screenOn=$screen doze=$idle '
+            'ttsSpeaking=${FlutterTtsEngine.shared.isSpeaking} '
+            'status=${_navState.status.name}');
+    // 每 30s 落盘一次：即使 Vivo 在锁屏后直接杀进程，最近一段日志仍可回看。
+    unawaited(VoiceLog.instance.saveSession());
+  }
+
   void _onNavTick() {
     if (!mounted) return;
     final DateTime now = DateTime.now();
@@ -570,11 +622,9 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
     _lastNavTickAt = now;
     _heartbeatSec++;
     if (_started && _heartbeatSec % 30 == 0) {
-      VoiceLog.instance.log(VoiceLogKind.fgs, 'tick',
-          detail: '心跳 n=${_recorder.pointCount} '
-              'km=${(_recorder.distanceMeters / 1000).toStringAsFixed(2)} '
-              'fgs=${ForegroundRunService.running} '
-              'status=${_navState.status.name}');
+      // 锁屏取证：同时记录 GPS 新鲜度 / 屏幕状态 / FGS / TTS 是否在播，
+      // 才能区分「GPS 没更新」与「GPS 正常但 TTS 没收到请求/没出声」。
+      unawaited(_logHeartbeat());
     }
     if (!_started || _activePath == null) return;
     final List<TrackPoint> pts = _recorder.points;
@@ -638,6 +688,8 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
     _announcer.onPosition(
       alongM: proj?.alongM ?? _alongForDraw,
       offRoute: offRoute,
+      // 动态提前量：跑得越快越早提示（无有效速度时退回用户设定）。
+      speedMps: last.speed,
     );
 
     // ---- 重规划接回确认（5.8）：新路径上越过连接段终点 = 接回原路线 ----
@@ -837,6 +889,8 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
       _activePath = RoutePath.fromPoints(merged);
       _activePts = merged;
       _activeSteps = newSteps;
+      // 重规划后的旧转弯事件全部作废；由新 steps 结构化 action 重建。
+      _activeTurns = deriveTurnsFromSteps(newSteps);
       _connectorPts = connector.length >= 2 ? connector : null;
       _rejoinAlongActive = plan.connectorM; // 越过它 = 接回原剩余路线
       _rejoinAnnounced = false;
@@ -866,8 +920,8 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
             'within=${plan.withinTolerance} api=${plan.apiCalls} '
             '耗时=${plan.elapsedS}s');
     // 5.8：旧步骤 ID 与队列全部作废，语音在新 steps 上重建
-    _announcer.rebind(
-      newSteps,
+    _announcer.rebindTurns(
+      _activeTurns,
       announcement: plan.withinTolerance
           ? '路线已经重新规划，请沿当前道路继续前进'
           : '路线已经重新规划，新路线比原目标略长，请沿当前道路继续前进',
@@ -1143,26 +1197,28 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
           d += spacing;
         }
       }
-      // 只标最近 3 个真实转弯（6.7 信息层级：不把地图贴满标签）
+      // P0：只标最近 3 个统一 TurnEvent（与语音同一事实来源）。
       int t = 0;
-      for (final RouteStep s in _activeSteps) {
-        if (s.cumulativeM <= _lastProj!.alongM + 5 ||
-            s.cumulativeM > path.total - 10) {
+      for (final RouteTurn turn in _activeTurns) {
+        if (!turn.isTurn) continue;
+        if (turn.atM <= _lastProj!.alongM + 5 || turn.atM > path.total - 10) {
           continue;
         }
-        final BitmapDescriptor? icon = switch (s.action) {
+        final BitmapDescriptor? icon = switch (turn.kind) {
           'left' => _turnLeftIcon,
           'right' => _turnRightIcon,
           'uturn' => _turnUTurnIcon,
           _ => null,
         };
         if (icon == null) continue;
+        final String road =
+            turn.roadTo.isNotEmpty ? turn.roadTo : turn.roadFrom;
         markers.add(Marker(
-          position: path.at(s.cumulativeM).point,
+          position: path.at(turn.atM).point,
           icon: icon,
           anchor: const Offset(0.5, 0.5),
           infoWindow: InfoWindow(
-              title: _turnNames[s.action] ?? '', snippet: s.road),
+              title: _turnNames[turn.kind] ?? '', snippet: road),
           zIndex: RouteStyle.zTurnAnnotation,
         )..setIdForCopy('run-turn-$t'));
         t++;
@@ -1207,17 +1263,20 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
   // ---------- 导航提示（顶部面板数据） ----------
 
   /// 下一转弯：规划 steps 中首个在当前位置前方的转向动作（真实高德步骤）。
+  /// P0：下一转弯只从统一 TurnEvent 读取（地图与语音结论一致）。
   _TurnHint? _nextTurnHint(double alongM) {
-    final List<RouteStep> steps = _activeSteps;
-    for (final RouteStep s in steps) {
-      if (s.cumulativeM <= alongM + 20) continue;
-      final IconData? icon = _turnIcons[s.action];
+    for (final RouteTurn turn in _activeTurns) {
+      if (!turn.isTurn) continue;
+      if (turn.atM <= alongM + 5) continue;
+      final IconData? icon = _turnIcons[turn.kind];
       if (icon == null) continue;
+      final String road =
+          turn.roadTo.isNotEmpty ? turn.roadTo : turn.roadFrom;
       return _TurnHint(
         icon: icon,
-        distM: s.cumulativeM - alongM,
-        name: _turnNames[s.action]!,
-        road: s.road,
+        distM: turn.atM - alongM,
+        name: _turnNames[turn.kind]!,
+        road: road,
       );
     }
     return null;

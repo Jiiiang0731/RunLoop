@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter_tts/flutter_tts.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -92,6 +94,13 @@ class FlutterTtsEngine implements SpeechEngine {
   DateTime? _lastSpeakAt;
   String _lastText = '';
 
+  // ---- P0 锁屏诊断：区分「请求已提交 / 已开始出声 / 合成完成」----
+  /// 已提交 speak 且尚未收到原生完成回调。
+  bool _activeUtterance = false;
+  Timer? _startWatchdog;
+  Timer? _doneWatchdog;
+  int _speakSeq = 0;
+
   @override
   bool get isSpeaking => _speaking;
 
@@ -121,10 +130,8 @@ class FlutterTtsEngine implements SpeechEngine {
     _tts.setStartHandler(() {
       _speaking = true;
       final DateTime? at = _lastSpeakAt;
-      VoiceLog.instance.log(
-        VoiceLogKind.start,
-        'tts',
-        text: _lastText,
+      _onNative(
+        'start',
         detail: at == null
             ? null
             : '首响 ${DateTime.now().difference(at).inMilliseconds}ms',
@@ -188,6 +195,49 @@ class FlutterTtsEngine implements SpeechEngine {
   }
 
   void _onNative(String event, {String? detail}) {
+    if (event == 'start') {
+      // 已提交 → 引擎真的开始出声。取消“未开始”看门狗，改挂“未完成”看门狗。
+      _startWatchdog?.cancel();
+      _startWatchdog = null;
+      VoiceLog.instance.log(
+        VoiceLogKind.start,
+        'tts',
+        text: _lastText,
+        detail: detail,
+      );
+      _doneWatchdog?.cancel();
+      _doneWatchdog = Timer(const Duration(seconds: 20), () {
+        if (!_activeUtterance) return;
+        _activeUtterance = false;
+        _speaking = false;
+        VoiceLog.instance.log(VoiceLogKind.error, 'tts',
+            text: _lastText,
+            detail: '看门狗：已收到 onStart，但 20s 内没有 onDone——'
+                '音频输出/引擎可能被系统中断');
+        onIdle?.call();
+      });
+      return;
+    }
+
+    _startWatchdog?.cancel();
+    _startWatchdog = null;
+    _doneWatchdog?.cancel();
+    _doneWatchdog = null;
+    if (!_activeUtterance) {
+      // 看门狗已判定超时/已停止后才到达的迟到回调：只记录，不重复调度。
+      VoiceLog.instance.log(
+        event == 'done'
+            ? VoiceLogKind.done
+            : event == 'cancel'
+                ? VoiceLogKind.cancel
+                : VoiceLogKind.error,
+        'tts',
+        text: _lastText,
+        detail: '迟到回调${detail == null ? '' : '：$detail'}',
+      );
+      return;
+    }
+    _activeUtterance = false;
     _speaking = false;
     VoiceLog.instance.log(
       event == 'done'
@@ -202,21 +252,52 @@ class FlutterTtsEngine implements SpeechEngine {
     onIdle?.call();
   }
 
+  /// 看门狗兜底：speak 已提交但原生层完全没有回调（锁屏/厂商冻结的典型表现）。
+  void _onStartWatchdog(int seq) {
+    if (seq != _speakSeq || !_activeUtterance) return;
+    _activeUtterance = false;
+    _speaking = false;
+    VoiceLog.instance.log(VoiceLogKind.error, 'tts',
+        text: _lastText,
+        detail: '看门狗：speak 请求已提交，但 6s 内未收到 onStart——'
+            '引擎未合成/被系统冻结（此时用户一定听不到声音）');
+    onIdle?.call();
+    // 尝试重新初始化一次，排除“引擎已被系统回收”的瞬时故障。
+    _initialized = false;
+    unawaited(_ensureInit().then((_) {
+      VoiceLog.instance
+          .log(VoiceLogKind.system, 'tts', detail: '看门狗后引擎重初始化完成');
+    }).catchError((Object e) {
+      VoiceLog.instance
+          .log(VoiceLogKind.error, 'tts', detail: '看门狗后重初始化失败: $e');
+    }));
+  }
+
   @override
   Future<void> speak(String text, {required bool flush}) async {
     if (text.isEmpty) return;
     await _ensureInit();
     // Android：0=QUEUE_FLUSH（打断+清队列），1=QUEUE_ADD（排队）。
     await _tts.setQueueMode(flush ? 0 : 1);
+    _startWatchdog?.cancel();
+    _doneWatchdog?.cancel();
+    final int seq = ++_speakSeq;
+    _activeUtterance = true;
     _speaking = true;
     _lastText = text;
     _lastSpeakAt = DateTime.now();
     VoiceLog.instance.log(VoiceLogKind.speak, 'tts',
         text: text, detail: flush ? 'flush' : 'queue');
+    _startWatchdog = Timer(const Duration(seconds: 6), () {
+      _onStartWatchdog(seq);
+    });
     try {
       // focus:true → 请求音频焦点（音乐自动 duck，播完归还）。
       await _tts.speak(text, focus: true);
     } catch (e) {
+      _startWatchdog?.cancel();
+      _startWatchdog = null;
+      _activeUtterance = false;
       VoiceLog.instance
           .log(VoiceLogKind.error, 'tts', text: text, detail: 'speak 异常: $e');
       _speaking = false;
@@ -226,6 +307,11 @@ class FlutterTtsEngine implements SpeechEngine {
 
   @override
   Future<void> stop() async {
+    _startWatchdog?.cancel();
+    _startWatchdog = null;
+    _doneWatchdog?.cancel();
+    _doneWatchdog = null;
+    _activeUtterance = false;
     if (!_initialized) return;
     try {
       await _tts.stop();

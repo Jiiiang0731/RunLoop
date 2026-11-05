@@ -144,6 +144,19 @@ class NativeTtsDiagnostics {
     }
   }
 
+  /// 轻量电源/锁屏状态（不枚举引擎）：供跑步心跳日志区分「锁屏中」。
+  Future<Map<String, dynamic>> powerState() async {
+    try {
+      final Map<dynamic, dynamic>? m =
+          await _channel.invokeMethod<Map<dynamic, dynamic>>('powerState');
+      return Map<String, dynamic>.from(m ?? const <dynamic, dynamic>{});
+    } on PlatformException catch (e) {
+      return <String, dynamic>{'error': e.message ?? '$e'};
+    } on MissingPluginException {
+      return <String, dynamic>{'error': 'unsupported'};
+    }
+  }
+
   Future<(List<TtsEngineInfo>, String? defaultPkg, String via)>
       listEngines() async {
     try {
