@@ -1,0 +1,17 @@
+{
+  "purpose": "同一真实高德数据下，对比阶段 N 改动前 HEAD d645c2b 与当前工作树（仅骨架路径）",
+  "old_head": "d645c2b",
+  "start": [114.027494, 30.53504],
+  "seeds": [1],
+  "old_results": [
+    {"target": 5000, "dist": 4901.3, "err": -98.7, "within": true, "closure": 0.59, "turns": 26, "density": 5.26, "rep": 0.267, "score": 49.4, "calls": 76, "wall_s": 19.4},
+    {"target": 15000, "dist": 15074.7, "err": 74.7, "within": true, "closure": 0.59, "turns": 29, "density": 1.92, "rep": 0.398, "score": 56.6, "calls": 135, "wall_s": 35.2},
+    {"target": 50000, "dist": 51387.0, "err": 1387.0, "within": false, "closure": 0.59, "turns": 80, "density": 1.55, "rep": 0.198, "score": 60.5, "calls": 182, "wall_s": 50.8}
+  ],
+  "new_results_same_request": [
+    {"target": 5000, "dist": 4901.3, "err": -98.7, "within": true, "closure": 0.59, "turns": 26, "density": 5.26, "rep": 0.267, "score": 49.4},
+    {"target": 15000, "dist": 15074.7, "err": 74.7, "within": true, "closure": 0.59, "turns": 29, "density": 1.92, "rep": 0.398, "score": 56.6},
+    {"target": 50000, "dist": 51387.0, "err": 1387.0, "within": false, "closure": 0.59, "turns": 80, "density": 1.55, "rep": 0.198, "score": 60.5}
+  ],
+  "conclusion": "5/15/50km 在新旧代码下单种子结果逐项一致，说明 anchor/quality 接入未改变骨架路径；50km seed1 超差是既有现象。最终回归通过「超差候选不提前停止、继续试 seed2/3」在 seed3 得到 49718.7m（-281.3m，达标）。"
+}

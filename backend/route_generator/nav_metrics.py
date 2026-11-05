@@ -11,6 +11,7 @@ from typing import Dict, List, Optional
 
 from .geo import GeoPoint, haversine
 from .nav_text import bearing, turn_kind
+from .quality import walk_type_profile
 from .scorer import repetition_ratio
 from .types import PlanStep
 
@@ -23,10 +24,8 @@ _SHORT_TURN_GAP_M = 50.0
 # 直行路段阈值（米）
 _STRAIGHT_THRESHOLDS = (200.0, 300.0, 500.0)
 
-# 阶段 N：高德步行 steps.walk_type 中不适合跑步的路段类型
-# （3 地下通道 / 4 过街天桥 / 5 地铁通道 / 8 扶梯 / 9 直梯 / 10 索道 / 11 空中通道）。
-# 0=普通道路、1=人行横道、6=公园、7=广场 不在此列（公园/广场是合理的跑步场所）。
-_WALK_BAD_TYPES = {"3", "4", "5", "8", "9", "10", "11"}
+# 阶段 N：walk_type 的取值解释集中在 quality.py。这里只消费已确认类型，
+# 未收录取值（如实测 20）不猜测、不参与「非地面路段」比例。
 
 
 def _polyline_length(pts: List[GeoPoint]) -> float:
@@ -161,17 +160,8 @@ def analyze_route(steps: List[PlanStep], polyline: List[GeoPoint],
         else:
             ratios[th] = 0.0
 
-    # 阶段 N：真实 walk_type 统计（地下通道/天桥/扶梯等不适合跑步的路段占比）
-    walk_types: Dict[str, int] = {}
-    bad_m = 0.0
-    for st in steps:
-        wt = (getattr(st, "walk_type", "") or "").strip()
-        if not wt:
-            continue
-        walk_types[wt] = walk_types.get(wt, 0) + 1
-        if wt in _WALK_BAD_TYPES:
-            bad_m += st.distance_m or 0.0
-    bad_ratio = round(bad_m / total_m, 3) if total_m > 0 else 0.0
+    # 阶段 N：真实 walk_type 统计（只解释已确认取值；未知值单列 unclassified）
+    profile = walk_type_profile(steps, total_m)
 
     return {
         "total_m": round(total_m, 1),
@@ -187,7 +177,9 @@ def analyze_route(steps: List[PlanStep], polyline: List[GeoPoint],
         "straight_ratio_300": ratios[300.0],
         "straight_ratio_500": ratios[500.0],
         "repetition_ratio": round(repetition_ratio(polyline), 3),
-        "walk_bad_ratio": bad_ratio,
-        "walk_types": walk_types,
+        # 兼容旧字段：已确认的非地面类型距离占比（不是安全分）
+        "walk_bad_ratio": profile["grade_separated_ratio"],
+        "walk_types": profile["counts"],
+        "walk_type_profile": profile,
         "target_m": target_m,
     }

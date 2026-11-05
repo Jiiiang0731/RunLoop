@@ -16,6 +16,7 @@
 import time
 from typing import List
 
+from .anchor_loop import build_anchor_loop
 from .calibrator import calibrate
 from .geo import GeoPoint
 from .nav_metrics import analyze_route
@@ -43,11 +44,24 @@ def adaptive_n_points(target_m: int) -> int:
     return 10
 
 
-def rank_candidates(candidates: List[Candidate]) -> List[Candidate]:
-    """达标候选按评分降序置顶并标记 recommended；失败候选保持原顺序置后。"""
+def rank_candidates(candidates: List[Candidate], target_m: int = None,
+                    tol_m: float = None) -> List[Candidate]:
+    """达标候选按评分降序置顶并标记 recommended；失败候选保持原顺序置后。
+
+    阶段 N：传入 target/tol 时，**距离达标者优先于未达标者**——避免长距离
+    场景里「评分略高但超出 ±tol」的候选压过真正达标的候选。
+    """
     ok = [c for c in candidates if c.error is None and c.loop is not None and c.score is not None]
     bad = [c for c in candidates if c not in ok]
-    ok.sort(key=lambda c: c.score.total, reverse=True)
+    if target_m is not None and tol_m is not None:
+        within = [c for c in ok
+                  if abs(c.loop.distance_m - target_m) <= tol_m]
+        outside = [c for c in ok if c not in within]
+        within.sort(key=lambda c: c.score.total, reverse=True)
+        outside.sort(key=lambda c: c.score.total, reverse=True)
+        ok = within + outside
+    else:
+        ok.sort(key=lambda c: c.score.total, reverse=True)
     for c in candidates:
         c.recommended = False
     if ok:
@@ -55,9 +69,65 @@ def rank_candidates(candidates: List[Candidate]) -> List[Candidate]:
     return ok + bad
 
 
+def _generate_anchor(planner: MapPlanner, start: GeoPoint,
+                     options: GenerateOptions) -> GenerateResult:
+    """阶段 N：锚点模式（有序参考锚点 → 真实道路闭环 → 多拐点裁剪）。
+
+    与骨架模式共用 Candidate / 序列化契约；额外带 anchor 信息。
+    距离不达标时仍返回真实闭环候选（within_tolerance=false），绝不切割折线。
+    """
+    t0 = time.time()
+    calls0 = getattr(planner, "http_calls", 0)
+    seed = options.seeds[0] if options.seeds else 1
+    cr = build_anchor_loop(planner, options.anchors, options.target_m,
+                           tol_m=options.tol_m,
+                           max_drop_total=options.max_drop_total)
+    dt = round(time.time() - t0, 2)
+    calls = getattr(planner, "http_calls", 0) - calls0
+    loop = cr.get("loop")
+    if loop is None or loop.error:
+        cand = Candidate(
+            seed=seed, loop=loop, score=None, api_calls=calls, elapsed_s=dt,
+            history=[], error=cr.get("error") or (loop.error if loop else "无法生成锚点闭环"))
+        return GenerateResult(
+            target_m=options.target_m, start=start, candidates=[cand],
+            total_api_calls=calls, total_elapsed_s=dt,
+            stage_times={"anchor_loop": dt})
+
+    metrics = (cr.get("best") or {}).get("metrics")
+    if metrics is None:
+        steps = [s for seg in loop.segments for s in seg.steps]
+        metrics = analyze_route(steps, loop.polyline, options.target_m)
+    score = score_route(options.target_m, loop, metrics)
+    best = cr.get("best") or {}
+    anchor = {
+        "mode": "anchor_loop",
+        "anchors_input": len(options.anchors),
+        "anchors_used": cr.get("anchors_used"),
+        "drops": best.get("drops") or [],
+        "drop_index": best.get("drop"),
+        "closure_m": loop.closure_m,
+        "closure_ok": loop.error is None,
+        "within_tolerance": abs(loop.distance_m - options.target_m) <= options.tol_m,
+        "tried_candidates": len(cr.get("candidates") or []),
+        "candidates_total": len(cr.get("candidates") or []),
+        # 只回传前 12 个候选摘要，避免响应体随组合数膨胀
+        "candidates": (cr.get("candidates") or [])[:12],
+    }
+    cand = Candidate(seed=seed, loop=loop, score=score, api_calls=calls,
+                     elapsed_s=dt, history=[], metrics=metrics,
+                     anchor=anchor, recommended=True)
+    return GenerateResult(
+        target_m=options.target_m, start=start, candidates=[cand],
+        total_api_calls=calls, total_elapsed_s=dt,
+        stage_times={"anchor_loop": dt})
+
+
 def generate_candidates(planner: MapPlanner, start: GeoPoint,
                         options: GenerateOptions) -> GenerateResult:
     """为每个种子生成一条候选路线，返回带评分与失败信息的完整结果（最优置顶）。"""
+    if options.anchors:
+        return _generate_anchor(planner, start, options)
     t_all = time.time()
     candidates: List[Candidate] = []
     stage_times: dict = {}
@@ -66,6 +136,10 @@ def generate_candidates(planner: MapPlanner, start: GeoPoint,
     n_points = options.n_points or adaptive_n_points(options.target_m)
 
     for seed in options.seeds:
+        # 阶段 N：只有「距离达标」的候选才计入 max_candidates。首个 seed 虽能
+        # 生成但超出 ±tol 时继续试后续 seed（App 默认发 [1,2,3]），避免把
+        # 超差路线当成第一条成功路线直接返回（50km 实测 seed1 +1387m、
+        # seed3 −281m）。达标立即停，成本不变。
         if ok_count >= options.max_candidates:
             break
         used = getattr(planner, "http_calls", 0) - http_start
@@ -95,16 +169,22 @@ def generate_candidates(planner: MapPlanner, start: GeoPoint,
                 for seg in cr.loop.segments:
                     all_steps.extend(seg.steps)
                 metrics = analyze_route(all_steps, cr.loop.polyline, options.target_m)
-            ok_count += 1
             candidates.append(Candidate(
                 seed=seed, loop=cr.loop,
                 score=score_route(options.target_m, cr.loop, metrics),
                 api_calls=cr.api_calls, elapsed_s=dt, history=cr.history,
                 metrics=metrics))
+            if abs(cr.loop.distance_m - options.target_m) <= options.tol_m:
+                ok_count += 1
 
     total_http = getattr(planner, "http_calls", 0) - http_start
+    ranked = rank_candidates(candidates, options.target_m, options.tol_m)
+    # max_candidates 只截断「成功生成的候选」；失败候选保留用于如实报错。
+    ok_part = [c for c in ranked if c.error is None and c.loop is not None]
+    bad_part = [c for c in ranked if c not in ok_part]
+    ranked = ok_part[:max(1, options.max_candidates)] + bad_part
     return GenerateResult(
         target_m=options.target_m, start=start,
-        candidates=rank_candidates(candidates),
+        candidates=ranked,
         total_api_calls=total_http, total_elapsed_s=round(time.time() - t_all, 2),
         stage_times=stage_times)

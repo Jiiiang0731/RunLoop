@@ -104,6 +104,8 @@ class GenerateOptions:
     max_api_calls: int = 800      # 硬预算，超过即停止（阶段 K 决策#2：质量优先，预算上调）
     per_seed_calls: int = 240     # 单种子调用上限（阶段 K：质量优先 + 绕行修复余量）
     fix_detours: bool = True      # 阶段 K：达标路线做无效绕行替换（spur_fix）
+    anchors: Optional[List[GeoPoint]] = None  # 阶段 N：有序参考锚点（首点=起点）
+    max_drop_total: int = 3       # 阶段 N：一次最多裁剪几个锚点（闭合由重新规划保证）
 
 
 @dataclass
@@ -117,6 +119,8 @@ class Candidate:
     error: Optional[str] = None
     metrics: Optional[dict] = None
     recommended: bool = False    # 评分最高的达标候选（阶段 J：排序后置顶）
+    anchor: Optional[dict] = None    # 阶段 N：锚点模式信息（drop/闭合/尝试数）
+    drivable: Optional[dict] = None  # 阶段 N：驾车可通行性核验（辅助指标）
 
 
 @dataclass

@@ -56,6 +56,10 @@ class TestHealth(ServerApiBase):
         self.assertEqual(j["env"], "production")   # RUNLOOP_ENV 未设 → 生产
         self.assertEqual(j["breaker"], "closed")
         self.assertIn("uptime_s", j)
+        self.assertIn("pid", j)
+        self.assertIn("started_at", j)
+        self.assertTrue(j["features"]["anchor_loop"])
+        self.assertTrue(j["features"]["verify_drivable"])
         # health 不经过限流/熔断（before_request 直通）
         self.assertNotIn("TEST-SECRET", r.get_data(as_text=True))
 
@@ -311,6 +315,82 @@ class TestGenerateFlow(ServerApiBase):
               {"origin": {"lng": 114.087, "lat": 30.536}, "target_m": 5000})
         self.assertEqual(captured["max_calls"], 800)
         self.assertTrue(captured["fix_detours"])
+
+
+class TestAnchorMode(ServerApiBase):
+    """阶段 N：anchors 参数接入 /api/route/generate（离线替身）。"""
+
+    ANCHORS = [[114.027494, 30.535040], [114.027651, 30.532929],
+               [114.026649, 30.530919], [114.027056, 30.529165]]
+
+    def test_anchor_validation(self):
+        base = {"origin": {"lng": 114.027494, "lat": 30.535040},
+                "target_m": 2500}
+        r = _post(self.client, "/api/route/generate",
+                  {**base, "anchors": self.ANCHORS[:3]})
+        self.assertEqual(r.status_code, 400)
+        self.assertEqual(r.get_json()["error_code"], "BAD_ANCHORS")
+        bad = list(self.ANCHORS)
+        bad[1] = [999.0, 30.5]
+        r = _post(self.client, "/api/route/generate", {**base, "anchors": bad})
+        self.assertEqual(r.status_code, 400)
+        self.assertEqual(r.get_json()["error_code"], "BAD_ANCHORS")
+
+    def test_anchor_options_passed_and_origin_falls_back(self):
+        captured = {}
+
+        def fake_gen(planner, origin, options):
+            captured["origin"] = origin
+            captured["anchors"] = options.anchors
+            return types.SimpleNamespace(candidates=[], total_api_calls=0,
+                                         stage_times={})
+
+        self._saved_gen = server_mod.generate_candidates
+        server_mod.generate_candidates = fake_gen
+        try:
+            r = _post(self.client, "/api/route/generate",
+                      {"anchors": self.ANCHORS, "target_m": 2500})
+        finally:
+            server_mod.generate_candidates = self._saved_gen
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(captured["origin"], tuple(self.ANCHORS[0]))
+        self.assertEqual(captured["anchors"], [tuple(p) for p in self.ANCHORS])
+        self.assertEqual(r.get_json()["route_mode"], "anchor")
+
+    def test_anchor_candidate_quality_contract(self):
+        loop = types.SimpleNamespace(
+            distance_m=2500.0, closure_m=1.5, start_snap_m=2.0, duration_s=1500.0,
+            polyline=[(114.027, 30.535), (114.028, 30.534), (114.027, 30.535)],
+            segments=[])
+        metrics = {
+            "turn_density": 1.0, "turns": 2, "straight_max_m": 300.0,
+            "straight_ratio_300": 0.6, "straight_avg_m": 400.0,
+            "repetition_ratio": 0.05,
+        }
+        cand = types.SimpleNamespace(
+            seed=1, loop=loop, error=None, recommended=True, score=None,
+            metrics=metrics, api_calls=20, elapsed_s=1.0, history=[],
+            anchor={"mode": "anchor_loop", "drop_index": 9,
+                    "closure_ok": True, "within_tolerance": True},
+            drivable=None)
+        self._saved_gen = server_mod.generate_candidates
+        server_mod.generate_candidates = lambda *a, **k: types.SimpleNamespace(
+            candidates=[cand], total_api_calls=20, stage_times={})
+        try:
+            r = _post(self.client, "/api/route/generate",
+                      {"origin": {"lng": 114.027494, "lat": 30.535040},
+                       "anchors": self.ANCHORS, "target_m": 2500})
+        finally:
+            server_mod.generate_candidates = self._saved_gen
+        self.assertEqual(r.status_code, 200)
+        c = r.get_json()["candidates"][0]
+        q = c["quality"]
+        self.assertTrue(q["road_continuity"]["available"])
+        self.assertFalse(q["road_safety"]["available"])
+        self.assertIsNone(q["road_safety"]["score"])
+        self.assertFalse(q["traffic_exposure"]["available"])
+        self.assertIsNone(q["traffic_exposure"]["score"])
+        self.assertEqual(c["anchor"]["mode"], "anchor_loop")
 
 
 if __name__ == "__main__":

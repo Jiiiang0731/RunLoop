@@ -73,6 +73,12 @@ class TestNavMetrics(unittest.TestCase):
         clean = [PlanStep(road="A", distance_m=19, polyline=a, walk_type="0")]
         self.assertEqual(analyze_route(clean, a, 100)["walk_bad_ratio"], 0.0)
 
+        # 实测未收录取值 20：只上报 unclassified，不猜测、不计入非地面比例
+        unknown = [PlanStep(road="A", distance_m=19, polyline=a, walk_type="20")]
+        m2 = analyze_route(unknown, a, 100)
+        self.assertEqual(m2["walk_bad_ratio"], 0.0)
+        self.assertEqual(m2["walk_type_profile"]["unclassified_counts"], {"20": 1})
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -76,6 +76,10 @@ class MapPlanner:
     def plan_walking(self, origin: GeoPoint, dest: GeoPoint) -> PlanResult:
         raise NotImplementedError
 
+    def plan_driving(self, origin: GeoPoint, dest: GeoPoint) -> PlanResult:
+        """可选能力：驾车可通行性核验（阶段 N 的辅助指标，不是安全）。"""
+        raise NotImplementedError
+
     @property
     def http_calls(self) -> int:
         """真实 HTTP 请求次数（不含缓存命中）。"""
@@ -97,6 +101,7 @@ class AmapWalkingPlanner(MapPlanner):
         self.sleep = sleep
         self.timeout = timeout
         self._cache: dict = {}
+        self._drive_cache: dict = {}
         self._cache_size = cache_size
         self._http_calls = 0
 
@@ -159,6 +164,57 @@ class AmapWalkingPlanner(MapPlanner):
             return PlanResult(error=last)
         return PlanResult(error=last)
 
+    def plan_driving(self, origin: GeoPoint, dest: GeoPoint) -> PlanResult:
+        """高德驾车 v5：只用于「机动车可通行性」辅助核验。
+
+        与步行共用 Key/缓存/预算；返回真实距离与 steps，不推断车流或安全。
+        """
+        ck = (round(origin[0], 6), round(origin[1], 6),
+              round(dest[0], 6), round(dest[1], 6))
+        if ck in self._drive_cache:
+            return self._drive_cache[ck]
+
+        q = urllib.parse.urlencode({
+            "origin": f"{origin[0]:.6f},{origin[1]:.6f}",
+            "destination": f"{dest[0]:.6f},{dest[1]:.6f}",
+            "key": self.key,
+        })
+        url = f"{self.base}/v5/direction/driving?{q}"
+        last = "unknown"
+        for attempt in range(self.retries + 1):
+            self._http_calls += 1
+            backoff = self.sleep * (2 ** attempt)
+            try:
+                data = self._http(url)
+            except Exception as e:  # noqa: BLE001
+                last = f"exception:{type(e).__name__}"
+                if attempt < self.retries:
+                    time.sleep(backoff)
+                    continue
+                return PlanResult(error=last)
+            if str(data.get("status")) == "1":
+                paths = (data.get("route") or {}).get("paths") or []
+                if paths:
+                    p = paths[0]
+                    raw_steps = p.get("steps", [])
+                    result = PlanResult(
+                        distance_m=_to_num(p.get("distance")),
+                        duration_s=_to_num(p.get("duration")),
+                        points=_parse_polyline_from_steps(raw_steps),
+                        steps=_parse_steps(raw_steps),
+                    )
+                    if len(self._drive_cache) >= self._cache_size:
+                        self._drive_cache.clear()
+                    self._drive_cache[ck] = result
+                    return result
+            last = f"infocode={data.get('infocode')} info={data.get('info')}"
+            if attempt < self.retries:
+                code = str(data.get("infocode") or "")
+                time.sleep(backoff * (2.0 if code in _THROTTLE_CODES else 1.0))
+                continue
+            return PlanResult(error=last)
+        return PlanResult(error=last)
+
 
 class MockPlanner(MapPlanner):
     """确定性模拟规划器：distance = 直线距离 * factor，折线为直线插值。
@@ -185,5 +241,14 @@ class MockPlanner(MapPlanner):
                         origin[1] + (dest[1] - origin[1]) * t))
         distance = straight * self.factor
         return PlanResult(distance_m=distance, duration_s=distance / 1.25, points=pts,
+                          steps=[PlanStep(instruction="直行", road="测试路",
+                                          distance_m=distance, polyline=pts)])
+
+    def plan_driving(self, origin: GeoPoint, dest: GeoPoint) -> PlanResult:
+        self.calls += 1
+        straight = haversine(origin, dest)
+        pts: List[GeoPoint] = [origin, dest]
+        distance = straight * 1.05
+        return PlanResult(distance_m=distance, duration_s=distance / 8.0, points=pts,
                           steps=[PlanStep(instruction="直行", road="测试路",
                                           distance_m=distance, polyline=pts)])

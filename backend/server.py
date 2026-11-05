@@ -45,6 +45,8 @@ from backend.reroute import reroute as reroute_plan  # noqa: E402
 from backend.route_generator import (  # noqa: E402
     AmapWalkingPlanner,
     GenerateOptions,
+    build_quality,
+    compute_drivable_access,
     generate_candidates,
 )
 from backend.route_generator.nav_text import build_nav_instructions  # noqa: E402
@@ -53,6 +55,8 @@ from backend.route_generator.sampling import sample_points_by_distance  # noqa: 
 
 KEY_FILE = os.path.join(ROOT, "config", "amap_key.local")
 SERVICE_VERSION = "0.6"
+# 健康检查里显式声明能力，便于确认「进程是不是新代码」而不是只看版本号。
+SERVICE_FEATURES = {"anchor_loop": True, "verify_drivable": True}
 MAX_BODY_BYTES = 256 * 1024
 MAX_API_CALLS_CLAMP = 1500      # 决策#2：质量优先，预算上限放宽（原 1200）
 DEFAULT_MAX_API_CALLS = 800
@@ -229,8 +233,9 @@ def create_app() -> Flask:
         return out
 
     def _serialize_candidate(c, target_m, tol_m):
-        if c.loop is None:
-            return {"seed": c.seed, "ok": False, "error": c.error or "无法生成闭环"}
+        if c.loop is None or getattr(c.loop, "error", None) or c.error:
+            err = c.error or (c.loop.error if c.loop is not None else None)
+            return {"seed": c.seed, "ok": False, "error": err or "无法生成闭环"}
         loop = c.loop
         score = c.score
         err = loop.distance_m - target_m
@@ -262,6 +267,10 @@ def create_app() -> Flask:
             "score": score.total if score else None,
             "score_components": score_components,
             "metrics": c.metrics or {},
+            # 阶段 N：连续性 / 安全（不可用）/ 车流（不可用）/ 驾车辅助分开
+            "quality": build_quality(loop, c.metrics or {},
+                                     getattr(c, "drivable", None)),
+            "anchor": getattr(c, "anchor", None),
             "polyline": [[round(p[0], 6), round(p[1], 6)] for p in poly],
             "overlaps": detect_overlaps(poly),
             "steps": _serialize_steps(loop.segments),
@@ -277,6 +286,10 @@ def create_app() -> Flask:
             "version": SERVICE_VERSION,
             "env": "development" if not is_production() else "production",
             "uptime_s": round(time.time() - state.started_at, 1),
+            "started_at": time.strftime("%Y-%m-%dT%H:%M:%S%z",
+                                        time.localtime(state.started_at)),
+            "pid": os.getpid(),
+            "features": SERVICE_FEATURES,
             "breaker": state.breaker.state,
             "served": state.served,
         })
@@ -293,7 +306,9 @@ def create_app() -> Flask:
                 "service_version": SERVICE_VERSION,
                 "announcement": os.environ.get("RUNLOOP_ANNOUNCEMENT", ""),
                 "generate": {"max_api_calls": DEFAULT_MAX_API_CALLS,
-                             "sleep_s": 0.05},
+                             "sleep_s": 0.05,
+                             # 锚点模式（阶段 N）：最多 15 个有序参考点
+                             "anchors_max": 15, "max_drop_total": 3},
                 "pois": {"interval_m": 1000, "radius": 500, "limit": 3},
                 # 动态重规划调优项（阶段 M-D；客户端可下发覆盖检测参数）
                 "reroute": {"tol_m": 500, "max_api_calls": 5,
@@ -307,7 +322,27 @@ def create_app() -> Flask:
         t0 = time.time()
         try:
             data = request.get_json(force=True, silent=True) or {}
-            origin = data.get("origin") or {}
+
+            # 阶段 N：可选锚点模式。anchors = [[lng,lat],...] 有序，首点=起点。
+            anchors = None
+            anchors_raw = data.get("anchors")
+            if anchors_raw is not None:
+                if not isinstance(anchors_raw, (list, tuple)) or \
+                        not (4 <= len(anchors_raw) <= 15):
+                    return _err(400, "BAD_ANCHORS", "anchors 需要 4~15 个有序点")
+                anchors = []
+                for item in anchors_raw:
+                    if not isinstance(item, (list, tuple)) or len(item) != 2:
+                        return _err(400, "BAD_ANCHORS", "anchors 每项需为 [lng,lat]")
+                    alng, alat = float(item[0]), float(item[1])
+                    if not (-180 <= alng <= 180 and -90 <= alat <= 90):
+                        return _err(400, "BAD_ANCHORS", "anchors 坐标非法")
+                    anchors.append((alng, alat))
+
+            origin = data.get("origin")
+            if origin is None and anchors:
+                origin = {"lng": anchors[0][0], "lat": anchors[0][1]}
+            origin = origin or {}
             lng = float(origin.get("lng"))
             lat = float(origin.get("lat"))
             target_m = int(data.get("target_m", 15000))
@@ -320,6 +355,7 @@ def create_app() -> Flask:
             max_api_calls = int(data.get("max_api_calls", DEFAULT_MAX_API_CALLS))
             sleep_s = float(data.get("sleep_s", 0.05))
             fix_detours = bool(data.get("fix_detours", True))
+            verify_drivable = bool(data.get("verify_drivable", False))
         except (TypeError, ValueError, AttributeError) as e:
             return _err(400, "BAD_REQUEST",
                         "参数错误" if is_production() else f"参数错误：{e}")
@@ -350,6 +386,7 @@ def create_app() -> Flask:
                 max_candidates=max(1, min(3, max_candidates)),
                 max_api_calls=max(50, min(MAX_API_CALLS_CLAMP, max_api_calls)),
                 fix_detours=fix_detours,
+                anchors=anchors,
             )
             result = generate_candidates(planner, (lng, lat), options)
         except Exception as e:  # noqa: BLE001
@@ -359,8 +396,25 @@ def create_app() -> Flask:
             detail = "" if is_production() else f"：{type(e).__name__}: {e}"
             return _err(500, "GENERATE_ERROR", f"路线生成失败{detail}")
 
+        # 阶段 N：可选的真实驾车核验（辅助道路等级/连通性，不是安全）。
+        # 只在显式请求时调用；失败段如实标记，绝不补造。
+        drivable_calls = 0
+        if verify_drivable:
+            remaining = max(0, max_api_calls - result.total_api_calls)
+            for c in result.candidates:
+                if c.loop is None or c.loop.error or remaining <= 0:
+                    continue
+                q = compute_drivable_access(planner, c.loop,
+                                            max_calls=min(20, remaining))
+                c.drivable = q
+                used = int(q.get("api_calls") or 0)
+                drivable_calls += used
+                remaining -= used
+        total_calls = result.total_api_calls + drivable_calls
+
         candidates = [_serialize_candidate(c, target_m, tol_m) for c in result.candidates]
         ok_candidates = [c for c in candidates if c.get("ok")]
+        route_mode = "anchor" if anchors else "skeleton"
 
         # 熔断反馈：候选错误命中限流 infocode → 计数；有成功候选 → 复位
         throttled = any(looks_throttled(c.get("error")) for c in candidates)
@@ -369,9 +423,10 @@ def create_app() -> Flask:
         elif ok_candidates:
             state.breaker.record_success()
         state.served += 1
-        g.log_extra = (f"target={target_m} calls={result.total_api_calls} "
+        g.log_extra = (f"mode={route_mode} target={target_m} calls={total_calls} "
                        f"ok={len(ok_candidates)}/{len(candidates)} "
                        f"origin={sanitize_origin(lng, lat)} "
+                       f"drivable={'Y' if verify_drivable else 'N'} "
                        f"throttled={'Y' if throttled else 'N'}")
 
         if not ok_candidates:
@@ -379,8 +434,10 @@ def create_app() -> Flask:
                 "success": False,
                 "error": "所有候选路线均生成失败（请检查坐标是否在可步行路网内）",
                 "error_code": "NO_ROUTE",
+                "route_mode": route_mode,
                 "target_m": target_m,
                 "tol_m": tol_m,
+                "verify_drivable": verify_drivable,
                 "candidates": candidates,
             }), 200
 
@@ -390,7 +447,9 @@ def create_app() -> Flask:
             "target_m": target_m,
             "tol_m": tol_m,
             "seeds": seeds,
-            "total_api_calls": result.total_api_calls,
+            "route_mode": route_mode,
+            "verify_drivable": verify_drivable,
+            "total_api_calls": total_calls,
             "elapsed_s": round(time.time() - t0, 1),
             "stage_times": result.stage_times,
             "candidates": candidates,

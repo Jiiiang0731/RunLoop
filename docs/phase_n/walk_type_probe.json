@@ -1,0 +1,350 @@
+{
+ "documented": {
+  "0": "普通道路",
+  "1": "人行横道",
+  "3": "地下通道",
+  "4": "过街天桥",
+  "5": "地铁通道",
+  "6": "公园",
+  "7": "广场",
+  "8": "扶梯",
+  "9": "直梯",
+  "10": "索道",
+  "11": "空中通道"
+ },
+ "groups": [
+  {
+   "name": "长江大学武汉校区 10 锚点闭环",
+   "profile": {
+    "counts": {
+     "0": 20
+    },
+    "distance_m": {
+     "0": 2987.0
+    },
+    "labels": {
+     "0": "普通道路"
+    },
+    "unclassified_counts": {},
+    "total_m": 2987.0
+   },
+   "steps": [
+    {
+     "walk_type": "0",
+     "instruction": "沿进喜路向南步行238米到达目的地",
+     "road": "进喜路",
+     "action": "",
+     "distance_m": 238.0,
+     "label": "普通道路"
+    },
+    {
+     "walk_type": "0",
+     "instruction": "沿进喜路向西南步行242米到达目的地",
+     "road": "进喜路",
+     "action": "",
+     "distance_m": 242.0,
+     "label": "普通道路"
+    },
+    {
+     "walk_type": "0",
+     "instruction": "向东南步行60米向右前方行走",
+     "road": "",
+     "action": "向右前方行走",
+     "distance_m": 60.0,
+     "label": "普通道路"
+    },
+    {
+     "walk_type": "0",
+     "instruction": "向南步行114米右转",
+     "road": "",
+     "action": "右转",
+     "distance_m": 114.0,
+     "label": "普通道路"
+    },
+    {
+     "walk_type": "0",
+     "instruction": "向西南步行35米到达目的地",
+     "road": "",
+     "action": "",
+     "distance_m": 35.0,
+     "label": "普通道路"
+    },
+    {
+     "walk_type": "0",
+     "instruction": "向东步行40米右转",
+     "road": "",
+     "action": "右转",
+     "distance_m": 40.0,
+     "label": "普通道路"
+    },
+    {
+     "walk_type": "0",
+     "instruction": "向东南步行184米左转",
+     "road": "",
+     "action": "左转",
+     "distance_m": 184.0,
+     "label": "普通道路"
+    },
+    {
+     "walk_type": "0",
+     "instruction": "向东步行53米左转",
+     "road": "",
+     "action": "左转",
+     "distance_m": 53.0,
+     "label": "普通道路"
+    },
+    {
+     "walk_type": "0",
+     "instruction": "向北步行28米右转",
+     "road": "",
+     "action": "右转",
+     "distance_m": 28.0,
+     "label": "普通道路"
+    },
+    {
+     "walk_type": "0",
+     "instruction": "向东步行119米到达目的地",
+     "road": "",
+     "action": "",
+     "distance_m": 119.0,
+     "label": "普通道路"
+    },
+    {
+     "walk_type": "0",
+     "instruction": "向东南步行235米到达目的地",
+     "road": "",
+     "action": "",
+     "distance_m": 235.0,
+     "label": "普通道路"
+    },
+    {
+     "walk_type": "0",
+     "instruction": "向东北步行273米到达目的地",
+     "road": "",
+     "action": "",
+     "distance_m": 273.0,
+     "label": "普通道路"
+    },
+    {
+     "walk_type": "0",
+     "instruction": "向西北步行404米到达目的地",
+     "road": "",
+     "action": "",
+     "distance_m": 404.0,
+     "label": "普通道路"
+    },
+    {
+     "walk_type": "0",
+     "instruction": "向西北步行57米右转",
+     "road": "",
+     "action": "右转",
+     "distance_m": 57.0,
+     "label": "普通道路"
+    },
+    {
+     "walk_type": "0",
+     "instruction": "向西北步行265米到达目的地",
+     "road": "",
+     "action": "",
+     "distance_m": 265.0,
+     "label": "普通道路"
+    },
+    {
+     "walk_type": "0",
+     "instruction": "向北步行238米到达目的地",
+     "road": "",
+     "action": "",
+     "distance_m": 238.0,
+     "label": "普通道路"
+    },
+    {
+     "walk_type": "0",
+     "instruction": "向南步行105米右转",
+     "road": "",
+     "action": "右转",
+     "distance_m": 105.0,
+     "label": "普通道路"
+    },
+    {
+     "walk_type": "0",
+     "instruction": "向西步行121米右转",
+     "road": "",
+     "action": "右转",
+     "distance_m": 121.0,
+     "label": "普通道路"
+    },
+    {
+     "walk_type": "0",
+     "instruction": "向北步行66米左转",
+     "road": "",
+     "action": "左转",
+     "distance_m": 66.0,
+     "label": "普通道路"
+    },
+    {
+     "walk_type": "0",
+     "instruction": "沿进喜路向西步行110米到达目的地",
+     "road": "进喜路",
+     "action": "",
+     "distance_m": 110.0,
+     "label": "普通道路"
+    }
+   ]
+  },
+  {
+   "name": "光谷广场-地下通道",
+   "origin": [
+    114.3965,
+    30.5046
+   ],
+   "destination": [
+    114.3965,
+    30.5086
+   ],
+   "distance_m": 981.0,
+   "profile": {
+    "counts": {
+     "0": 8,
+     "3": 1
+    },
+    "distance_m": {
+     "0": 846.0,
+     "3": 135.0
+    },
+    "labels": {
+     "0": "普通道路",
+     "3": "地下通道"
+    },
+    "unclassified_counts": {},
+    "total_m": 981.0
+   },
+   "non_zero_steps": [
+    {
+     "walk_type": "3",
+     "instruction": "向北步行135米右转",
+     "road": "",
+     "action": "右转",
+     "distance_m": 135.0,
+     "label": "地下通道"
+    }
+   ]
+  },
+  {
+   "name": "循礼门-过街天桥",
+   "origin": [
+    114.28262,
+    30.5846
+   ],
+   "destination": [
+    114.28262,
+    30.5856
+   ],
+   "distance_m": 303.0,
+   "profile": {
+    "counts": {
+     "0": 4,
+     "4": 1
+    },
+    "distance_m": {
+     "0": 141.0,
+     "4": 162.0
+    },
+    "labels": {
+     "0": "普通道路",
+     "4": "过街天桥"
+    },
+    "unclassified_counts": {},
+    "total_m": 303.0
+   },
+   "non_zero_steps": [
+    {
+     "walk_type": "4",
+     "instruction": "向北步行162米右转",
+     "road": "",
+     "action": "右转",
+     "distance_m": 162.0,
+     "label": "过街天桥"
+    }
+   ]
+  },
+  {
+   "name": "光谷广场-地铁通道",
+   "origin": [
+    114.3942,
+    30.5058
+   ],
+   "destination": [
+    114.4002,
+    30.5058
+   ],
+   "distance_m": 900.0,
+   "profile": {
+    "counts": {
+     "0": 7,
+     "5": 1
+    },
+    "distance_m": {
+     "0": 628.0,
+     "5": 272.0
+    },
+    "labels": {
+     "0": "普通道路",
+     "5": "地铁通道"
+    },
+    "unclassified_counts": {},
+    "total_m": 900.0
+   },
+   "non_zero_steps": [
+    {
+     "walk_type": "5",
+     "instruction": "向东步行272米向左后方行走",
+     "road": "",
+     "action": "向左后方行走",
+     "distance_m": 272.0,
+     "label": "地铁通道"
+    }
+   ]
+  },
+  {
+   "name": "光谷广场-未知类型",
+   "origin": [
+    114.397,
+    30.5055
+   ],
+   "destination": [
+    114.3982,
+    30.5065
+   ],
+   "distance_m": 307.0,
+   "profile": {
+    "counts": {
+     "0": 4,
+     "20": 1
+    },
+    "distance_m": {
+     "0": 299.0,
+     "20": 8.0
+    },
+    "labels": {
+     "0": "普通道路",
+     "20": "unclassified"
+    },
+    "unclassified_counts": {
+     "20": 1
+    },
+    "total_m": 307.0
+   },
+   "non_zero_steps": [
+    {
+     "walk_type": "20",
+     "instruction": "向西步行8米右转",
+     "road": "",
+     "action": "右转",
+     "distance_m": 8.0,
+     "label": "unclassified"
+    }
+   ]
+  }
+ ],
+ "api_calls": 19
+}

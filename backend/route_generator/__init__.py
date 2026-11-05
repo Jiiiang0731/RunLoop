@@ -19,6 +19,11 @@ from .scorer import (
     turn_density_score, long_straight_score, sharp_short_score,
 )
 from .nav_metrics import analyze_route, detect_turns
+from .quality import (
+    build_quality, compute_drivable_access, walk_type_profile,
+    WALK_TYPE_LABELS, WALK_TYPE_GRADE_SEPARATED,
+)
+from .anchor_loop import build_anchor_loop
 from .variants import SkeletonVariant, plan_variants
 from .spur_fix import (
     fix_spurs, find_spur_intervals, SpurFix, SpurFixResult,
@@ -37,6 +42,9 @@ __all__ = [
     "score_route", "DEFAULT_WEIGHTS",
     "turn_density_score", "long_straight_score", "sharp_short_score",
     "analyze_route", "detect_turns", "adaptive_n_points",
+    "build_quality", "compute_drivable_access", "walk_type_profile",
+    "WALK_TYPE_LABELS", "WALK_TYPE_GRADE_SEPARATED",
+    "build_anchor_loop",
     "SkeletonVariant", "plan_variants", "rank_candidates",
     "fix_spurs", "find_spur_intervals", "SpurFix", "SpurFixResult",
     "detect_overlaps",

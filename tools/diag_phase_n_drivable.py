@@ -31,10 +31,12 @@ ANCHORS = [
     (114.030107, 30.535383), (114.027494, 30.535040),
 ]
 
+# 只写官方已确认取值；2 不是官方地下通道取值（曾误映射，已修正）。
+# 真实 API 还可能返回文档未收录取值（如实测 20），一律 unclassified。
 WALK_TYPE_NAMES = {
-    "0": "普通道路", "1": "人行横道", "2": "地下通道", "3": "地下通道",
+    "0": "普通道路", "1": "人行横道", "3": "地下通道",
     "4": "过街天桥", "5": "地铁通道", "6": "公园", "7": "广场",
-    "8": "扶梯", "9": "直梯", "10": "索道", "11": "空中通道", "12": "其它",
+    "8": "扶梯", "9": "直梯", "10": "索道", "11": "空中通道",
 }
 
 
@@ -78,23 +80,23 @@ def main():
         w = planner.plan_walking(a, b)
         d, err = drive(key, a, b)
         time.sleep(0.1)
-        types = Counter()
-        for st in w.steps:
-            # PlanStep 不保留 walk_type；此处按原始 instruction 无法复原，
-            # 故仅统计 action 缺失（无名小路）比例作为补充信号
-            types["step"] += 1
+        # 阶段 N：PlanStep 已保留真实 walk_type；未知值单独显示
+        types = Counter((st.walk_type or "").strip() for st in w.steps if st.walk_type)
+        types_label = {k: WALK_TYPE_NAMES.get(k, "unclassified") for k in types}
         ratio = (d / w.distance_m) if (d and w.distance_m) else None
         rows.append({"leg": i + 1, "walking_m": w.distance_m if not w.error else None,
                      "driving_m": d, "driving_err": err, "ratio": ratio,
                      "walk_steps": len(w.steps),
+                     "walk_types": dict(types),
+                     "walk_type_labels": types_label,
                      "walk_actions": [s.action for s in w.steps if s.action],
                      "roads": [s.road for s in w.steps if s.road]})
-        print("%4d | %7s | %7s | %5s | steps=%d actions=%s roads=%s"
+        print("%4d | %7s | %7s | %5s | walk_type=%s actions=%s roads=%s"
               % (i + 1,
                  ("%.0f" % w.distance_m) if not w.error else "FAIL",
                  ("%.0f" % d) if d else "FAIL",
                  ("%.2f" % ratio) if ratio else "-",
-                 len(w.steps),
+                 dict(types),
                  [s.action for s in w.steps if s.action],
                  [s.road for s in w.steps if s.road]))
 
