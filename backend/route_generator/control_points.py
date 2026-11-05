@@ -15,10 +15,11 @@ def generate_ring(center: GeoPoint, radius_m: float, n: int, seed: int,
     生成 n 个控制点，按 shape 分布在半径 radius_m 的骨架曲线上。
 
     - shape: "ring" 圆/椭圆（默认）；"fig8" 双纽线 8 字（Gerono lemniscate）；
-      "petal" 四瓣玫瑰线 r = R·cos(2θ)（阶段 K 决策#4：复合骨架实测探索）。
-    - aspect: 椭圆轴比（1.0 = 圆；>1 南北拉长，<1 东西拉长）。
+      "petal" 四瓣玫瑰线 r = R·cos(2θ)；"rect" 周长等长的矩形（阶段 N：
+      城市街区/校园外围更接近矩形而不是圆，短距离专用）。
+    - aspect: 椭圆/矩形轴比（1.0 = 方形；>1 南北拉长，<1 东西拉长）。
     - angle_deg: 整体旋转角度。
-    - jitter: 半径随机抖动比例。
+    - jitter: 半径随机抖动比例（rect 不抖动，保持角点贴合道路转角）。
     - 相同 seed + 参数 => 完全相同的点（可复现）。
     """
     rng = random.Random(seed)
@@ -28,6 +29,26 @@ def generate_ring(center: GeoPoint, radius_m: float, n: int, seed: int,
     base = rng.uniform(0, 2 * math.pi)
     rot = math.radians(angle_deg)
     pts: List[GeoPoint] = []
+    if shape == "rect":
+        # 周长等长映射：半宽 hw 使矩形周长 4·(1+aspect)·hw ≈ 2πR
+        hw = radius_m * math.pi / (2.0 * (1.0 + aspect))
+        hh = hw * aspect
+        w, h = 2 * hw, 2 * hh
+        per = 2 * (w + h)
+        for i in range(n):
+            d = per * i / n
+            if d < w:
+                x, y = -hw + d, -hh
+            elif d < w + h:
+                x, y = hw, -hh + (d - w)
+            elif d < 2 * w + h:
+                x, y = hw - (d - w - h), hh
+            else:
+                x, y = -hw, hh - (d - 2 * w - h)
+            xr = x * math.cos(rot) - y * math.sin(rot)
+            yr = x * math.sin(rot) + y * math.cos(rot)
+            pts.append((round(lng + xr / mlng, 6), round(lat + yr / mlat, 6)))
+        return pts
     for i in range(n):
         th = base + 2 * math.pi * i / n
         rr = radius_m * (1 + rng.uniform(-jitter, jitter))

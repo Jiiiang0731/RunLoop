@@ -11,24 +11,49 @@ from typing import Dict, List, Optional
 from .geo import haversine
 from .types import LoopRoute, ScoreComponent, ScoreResult
 
-# 权重（阶段 I）：转弯密度 35% / 长直 25% / 重复 20% / 急弯短连弯 10% / 距离贴合 10%
+# 权重（阶段 N）：距离贴合升为第一权重——用户规范「±500m 是最大容差，
+# 不是允许随意使用的误差额度」；转弯/直行/重复/急弯保持质量约束作用。
 DEFAULT_WEIGHTS: Dict[str, float] = {
-    "turn_density": 0.35,
-    "long_straight": 0.25,
-    "repetition": 0.20,
-    "sharp_short": 0.10,
-    "distance_fit": 0.10,
+    "distance_fit": 0.35,
+    "turn_density": 0.30,
+    "long_straight": 0.15,
+    "repetition": 0.15,
+    "sharp_short": 0.05,
 }
 
+# 距离评分曲线（相对目标，阶段 N）：1km→20m 满分/100m 归零；
+# 5km→50m/500m；50km→500m/5000m（此时 ±500m 硬上限本身更严）。
+DIST_FULL_ABS_M = 20.0
+DIST_FULL_RATIO = 0.01
+DIST_ZERO_ABS_M = 60.0
+DIST_ZERO_RATIO = 0.10
 
-def distance_error_score(err_m: float) -> float:
-    """距离误差评分：±300m 内满分，300→2300m 线性衰减到 0。"""
+
+def distance_error_score(err_m: float, target_m: Optional[float] = None) -> float:
+    """距离误差评分（阶段 N：以用户目标为中心的相对曲线）。
+
+    旧实现「±300m 内满分」让 1km 差 400m 与差 30m 几乎等价，被用户明确
+    否决。新曲线：满分带宽 = max(20m, 1%·目标)，归零点 = max(60m, 10%·目标)，
+    中间线性——误差越接近目标得分越高，绝不饱和。
+    `target_m=None` 时退回旧的绝对曲线（兼容历史调用）。
+    """
     a = abs(err_m)
-    if a <= 300:
+    if target_m is None or target_m <= 0:
+        if a <= 300:
+            return 100.0
+        if a >= 2300:
+            return 0.0
+        return round(100.0 * (1 - (a - 300) / 2000.0), 1)
+    t = float(target_m)
+    full = max(DIST_FULL_ABS_M, DIST_FULL_RATIO * t)
+    zero = max(DIST_ZERO_ABS_M, DIST_ZERO_RATIO * t)
+    if zero <= full:
+        zero = full + 1.0
+    if a <= full:
         return 100.0
-    if a >= 2300:
+    if a >= zero:
         return 0.0
-    return round(100.0 * (1 - (a - 300) / 2000.0), 1)
+    return round(100.0 * (1 - (a - full) / (zero - full)), 1)
 
 
 def closure_score(closure_m: float) -> float:
@@ -129,8 +154,8 @@ def score_route(target_m: int, loop: LoopRoute,
         "sharp_short", sharp_short_score(m), w.get("sharp_short", 0), True,
         f"急弯 {int(m.get('sharp_turns', 0))}，短连弯 {int(m.get('short_consecutive', 0))}"))
     components.append(ScoreComponent(
-        "distance_fit", distance_error_score(err), w.get("distance_fit", 0), True,
-        f"误差 {err:+.0f}m"))
+        "distance_fit", distance_error_score(err, target_m), w.get("distance_fit", 0), True,
+        f"误差 {err:+.0f}m（目标 {target_m}m）"))
     # 硬约束：不计入加权，仅展示
     components.append(ScoreComponent(
         "closure", closure_score(loop.closure_m), 0.0, True, f"闭合 {loop.closure_m}m"))

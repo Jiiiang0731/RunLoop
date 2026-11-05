@@ -4,8 +4,9 @@
 import unittest
 
 from backend.route_generator import (
-    closure_score, distance_error_score, repetition_ratio, repetition_score, score_route,
-    turn_density_score, long_straight_score, sharp_short_score,
+    DEFAULT_WEIGHTS, closure_score, distance_error_score, repetition_ratio,
+    repetition_score, score_route, turn_density_score, long_straight_score,
+    sharp_short_score,
 )
 from backend.route_generator.types import LoopRoute
 
@@ -18,6 +19,26 @@ class TestScores(unittest.TestCase):
         self.assertEqual(distance_error_score(800), 75.0)
         self.assertEqual(distance_error_score(2300), 0.0)
         self.assertEqual(distance_error_score(5000), 0.0)
+
+    def test_distance_error_relative_to_target(self):
+        """阶段 N：以目标为中心的相对曲线——1km 差 400m 不得再接近满分。"""
+        # 1km：满分带 20m，归零点 100m
+        self.assertEqual(distance_error_score(20, 1000), 100.0)
+        self.assertEqual(distance_error_score(100, 1000), 0.0)
+        self.assertGreater(distance_error_score(30, 1000),
+                           distance_error_score(60, 1000))
+        # 用户投诉场景：1km 目标实际 0.6km（误差 −400m）→ 0 分，而不是旧的 95 分
+        self.assertEqual(distance_error_score(-400, 1000), 0.0)
+        # 5km：满分 50m、归零 500m
+        self.assertEqual(distance_error_score(50, 5000), 100.0)
+        self.assertEqual(distance_error_score(500, 5000), 0.0)
+        self.assertAlmostEqual(distance_error_score(275, 5000), 50.0, places=0)
+        # 50km：满分 500m（±500m 硬上限本身更严）
+        self.assertEqual(distance_error_score(500, 50000), 100.0)
+
+    def test_distance_is_first_weight(self):
+        self.assertGreaterEqual(DEFAULT_WEIGHTS["distance_fit"], 0.3)
+        self.assertEqual(round(sum(DEFAULT_WEIGHTS.values()), 6), 1.0)
 
     def test_closure(self):
         self.assertEqual(closure_score(0), 100.0)

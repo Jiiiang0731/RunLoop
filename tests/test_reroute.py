@@ -288,5 +288,54 @@ class TestRerouteEndpoint(unittest.TestCase):
         self.assertEqual(r.status_code, 400)
 
 
+class TestRerouteTargetPreservation(unittest.TestCase):
+    """阶段 N：重规划必须优先保持用户的**目标里程**。
+
+    真实缺陷（阶段 M）：候选评分 extra=connector−skipped 奖励「跳过更多
+    原路线」，实测把 1km 路线接回终点后缩成 604m，且固定 ±500m 仍判达标。
+    """
+
+    def _square(self, side_m: float = 250.0, lat: float = 39.9, lng: float = 116.0):
+        dlat = side_m / 110574.0
+        dlng = side_m / (111320.0 * math.cos(math.radians(lat)))
+        corners = [(lng, lat), (lng + dlng, lat),
+                   (lng + dlng, lat + dlat), (lng, lat + dlat), (lng, lat)]
+        dense = []
+        for i in range(len(corners) - 1):
+            for k in range(10):
+                t = k / 10.0
+                dense.append((corners[i][0] + (corners[i + 1][0] - corners[i][0]) * t,
+                              corners[i][1] + (corners[i + 1][1] - corners[i][1]) * t))
+        dense.append(corners[-1])
+        return dense
+
+    def test_prefers_candidate_that_keeps_target(self):
+        poly = self._square()          # 总长约 1000m 的闭环
+        cum = [0.0]
+        for i in range(1, len(poly)):
+            cum.append(cum[-1] + haversine(poly[i - 1], poly[i]))
+        poly_total = cum[-1]
+        origin = (poly[0][0] + 0.0005, poly[0][1] + 0.0005)   # 偏离起点约 60m
+        res = reroute(FakePlanner(factor=1.15), origin, poly,
+                      300.0, 1000.0, 300.0, tol_m=500.0, max_calls=5)
+        self.assertTrue(res.ok)
+        # 不得直接接回终点（那会丢掉全部剩余路线）
+        self.assertNotAlmostEqual(res.chosen.along_m, poly_total, places=1)
+        endpoint = max(res.candidates, key=lambda c: c.along_m)
+        self.assertLess(abs(res.estimated_total_m - 1000.0),
+                        abs(endpoint.estimated_total_m - 1000.0),
+                        "选中候选的目标误差必须小于「直接接回终点」")
+
+    def test_relative_tolerance_exposed(self):
+        poly = self._square()
+        res = reroute(FakePlanner(factor=1.15), poly[0], poly,
+                      300.0, 1000.0, 300.0, tol_m=500.0, max_calls=5)
+        self.assertTrue(res.ok)
+        self.assertEqual(res.tol_effective_m, 50.0, "1km 目标内部容差应为 50m")
+        res2 = reroute(FakePlanner(factor=1.15), poly[0], poly,
+                       300.0, 50000.0, 300.0, tol_m=500.0, max_calls=5)
+        self.assertEqual(res2.tol_effective_m, 500.0, "长距离仍受 ±500m 硬上限")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

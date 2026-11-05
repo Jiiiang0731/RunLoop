@@ -511,6 +511,7 @@ def create_app() -> Flask:
             "estimated_total_m": res.estimated_total_m,
             "target_m": target_m,
             "tol_m": tol_m,
+            "tol_effective_m": res.tol_effective_m,
             "within_tolerance": res.within_tolerance,
             "candidates_evaluated": _ser_cands(),
             "api_calls": res.api_calls,

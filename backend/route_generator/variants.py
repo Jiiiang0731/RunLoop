@@ -21,12 +21,13 @@ from typing import List
 class SkeletonVariant:
     """一个环骨架配置。"""
     n_points: int       # 控制点数量
-    aspect: float       # 椭圆轴比（1.0=圆，>1 南北拉长）
+    aspect: float       # 椭圆/矩形轴比（1.0=圆/方，>1 南北拉长）
     angle_deg: float    # 整体旋转角（度）
     jitter: float       # 半径随机抖动比例
-    max_iters: int      # 该变体的 R 缩放迭代预算
+    max_iters: int      # 该变体的 R 缩放迭代预算（1 = 网格模式，只建一次）
     label: str          # 展示/日志用标签
-    shape: str = "ring"  # 骨架曲线：ring / fig8 / petal（阶段 K 决策#4）
+    shape: str = "ring"  # 骨架曲线：ring / fig8 / petal / rect（阶段 N）
+    radius_factor: float = 1.0  # 阶段 N：短距离网格的半径倍率（相对 R_init）
 
 
 def lean_n_points(n_points: int) -> int:
@@ -41,19 +42,39 @@ def lean_n_points(n_points: int) -> int:
     return max(5, int(round(n_points * 0.62)))
 
 
+# 阶段 N：短距离（≤3km）专用阈值。低于该距离时街区尺度主导，
+# 圆形骨架 + R 定点迭代会振荡（实测 1km 出现 586m/−41%，64 次调用不收敛）。
+SHORT_DISTANCE_M = 3000
+
+
 def plan_variants(target_m: int, n_points: int, seed: int,
                   base_jitter: float = 0.15,
                   base_max_iters: int = 8) -> List[SkeletonVariant]:
     """返回按尝试顺序排列的骨架变体。
 
-    - lean_ell：少点椭圆（主减转弯变体，最先尝试；高分则提前终止省调用）；
-    - base：圆形多点（收敛可靠，作为距离断层时的兜底）；
-    - lean_cir：少点低抖动椭圆（补充多样性，仅在前两者都可能不达标时兜底）。
-
-    当少点变体无法真正减少控制点数（如 5km base 已是 5 点）时，减点无意义、
-    只会重复消耗调用，此时仅返回 base 单变体（与旧行为一致、成本最低）。
-    角度由 seed 确定性推导，不同 seed 探索不同方向。
+    阶段 N 分两条路径：
+    - 短距离（≤3km）：**半径×形状确定性网格**，每个变体只建一次（max_iters=1），
+      取误差最小且通过质量门限者；不再用 R 定点迭代（距离对半径高度不连续，
+      实测在两值间无限振荡）。8 个控制点让骨架能贴合街区/校园拐角。
+    - 长距离（>3km）：沿用阶段 J/K 的「少转弯椭圆 → 多点圆兜底 → 低抖动圆」，
+      保持 15km/50km 已验证的质量。
     """
+    if target_m <= SHORT_DISTANCE_M:
+        n = max(n_points, 8)
+        a = float((seed * 37) % 90)
+        return [
+            # 中等矩形：城市街区/校园外围最常见的自然形态（周长与圆等长）
+            SkeletonVariant(n, 1.0, a, 0.0, 1, "grid_rect", shape="rect"),
+            SkeletonVariant(n, 1.0, a, 0.05, 1, "grid_ring"),
+            SkeletonVariant(n, 1.0, a + 30, 0.04, 1, "grid_rect_big",
+                            shape="rect", radius_factor=1.25),
+            SkeletonVariant(n, 1.0, a + 30, 0.05, 1, "grid_ring_small",
+                            radius_factor=0.80),
+            SkeletonVariant(n, 1.0, a + 60, 0.06, 1, "grid_ring_big",
+                            radius_factor=1.20),
+            SkeletonVariant(n, 1.0, a + 60, 0.06, 1, "grid_rect_xl",
+                            shape="rect", radius_factor=1.45),
+        ]
     lean_n = lean_n_points(n_points)
     base = SkeletonVariant(n_points=n_points, aspect=1.0, angle_deg=0.0,
                            jitter=base_jitter, max_iters=base_max_iters, label="base")

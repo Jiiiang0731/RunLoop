@@ -38,6 +38,16 @@ EARLY_MAX_DENSITY = 1.5
 _MAX_BUILD_FAILS_PER_VARIANT = 2
 
 
+def tight_tolerance(tol_m: float, target_m: int) -> float:
+    """内部「够好了」阈值（阶段 N）。
+
+    用户规范：±500m 是**最大容差**，不是合格线。内部目标 = 5% 目标距离，
+    下限 30m，且不超过硬容差（长距离仍受 ±500m 约束，保持 J/K 质量）。
+    1km→50m，2.5km→125m，5km→250m，50km→500m。
+    """
+    return min(float(tol_m), max(30.0, 0.05 * float(target_m)))
+
+
 def _loop_metrics(loop: LoopRoute, target_m: int) -> dict:
     all_steps = []
     for seg in loop.segments:
@@ -103,6 +113,7 @@ def calibrate(planner: MapPlanner, start: GeoPoint, target_m: int, n_points: int
         variants = plan_variants(target_m, n_points, seed,
                                  base_jitter=jitter, base_max_iters=max_iters)
 
+    tight = tight_tolerance(tol_m, target_m)
     best: Optional[LoopRoute] = None
     best_err: Optional[float] = None
     best_score: Optional[float] = None
@@ -121,7 +132,9 @@ def calibrate(planner: MapPlanner, start: GeoPoint, target_m: int, n_points: int
             break
         variants_tried += 1
         iters = min(v.max_iters, max_iters) if v.label == "base" else v.max_iters
-        R = target_m / (2 * math.pi * detour_factor)
+        R = target_m / (2 * math.pi * detour_factor) * v.radius_factor
+        # 阶段 N：记录本次变体内已试的 (R, 真实距离)，用于振荡防护
+        samples: List[tuple] = []
         fails = 0
         for it in range(iters):
             if max_calls is not None and calls >= max_calls:
@@ -141,6 +154,7 @@ def calibrate(planner: MapPlanner, start: GeoPoint, target_m: int, n_points: int
                 continue
             fails = 0
             e = loop.distance_m - target_m
+            samples.append((R, loop.distance_m))
             metrics = _loop_metrics(loop, target_m)
             score = score_route(target_m, loop, metrics).total
             history.append({
@@ -152,19 +166,32 @@ def calibrate(planner: MapPlanner, start: GeoPoint, target_m: int, n_points: int
             if _is_better(e, score, best_err, best_score, tol_m):
                 best, best_err, best_score, best_metrics = loop, e, score, metrics
                 best_variant, best_R = v, R
-            if _should_stop_early(e, score, metrics, tol_m):
+            if _should_stop_early(e, score, metrics, tight):
                 stopped_early = True
                 break
-            if abs(e) <= tol_m:
-                # 该变体已达标：质量提升交给后续骨架变体，不再微调 R 浪费调用。
+            if abs(e) <= tight:
+                # 已进入内部目标带（5%·目标）：质量提升交给后续骨架变体。
                 break
             factor = target_m / max(loop.distance_m, 1.0)
-            R = R * (1 + 0.6 * (factor - 1))
+            R_next = R * (1 + 0.6 * (factor - 1))
+            # 振荡防护（阶段 N）：距离对半径高度不连续时，定点迭代会在两个
+            # R 之间无限来回（实测 2.5km：R=234→4652m、R=169→1524m，重复 4 轮）。
+            # 若新 R 落在已试 R 的 2% 内（或样本按 R 排序后误差变号），改用二分。
+            if any(abs(R_next - r) / max(r, 1e-6) < 0.02 for r, _ in samples):
+                below = [r for r, d in samples if d < target_m]
+                above = [r for r, d in samples if d > target_m]
+                if below and above:
+                    R_next = (max(below) + min(above)) / 2.0
+                elif above:
+                    R_next = min(above) * 1.15
+                elif below:
+                    R_next = max(below) * 0.85
+            R = R_next
 
-        # 变体级止损：已尝试 ≥2 个变体且已有达标路线 → 接受，不再试第 3 个
-        # （第 3 变体只作「前两个都不达标」时的收敛救援，避免长距离成本膨胀）。
+        # 变体级止损：已尝试 ≥2 个变体且已有路线进入内部目标带 → 接受，
+        # 不再试第 3 个（第 3 变体只作「前两个都不达标」时的收敛救援）。
         if (not stopped_early and best_err is not None
-                and abs(best_err) <= tol_m and variants_tried >= 2):
+                and abs(best_err) <= tight and variants_tried >= 2):
             stopped_early = True
 
     # ---- 阶段 K：无效绕行替换（只对达标最优路线做，硬约束 ±tol 不变） ----
@@ -187,7 +214,7 @@ def calibrate(planner: MapPlanner, start: GeoPoint, target_m: int, n_points: int
         if sres.fixes:
             fixed = sres.loop
             e = fixed.distance_m - target_m
-            if abs(e) <= tol_m:
+            if abs(e) <= tight:
                 metrics_f = _loop_metrics(fixed, target_m)
                 score_f = score_route(target_m, fixed, metrics_f).total
                 history.append({"event": "spur_accept", "err": round(e, 1),
@@ -228,7 +255,7 @@ def calibrate(planner: MapPlanner, start: GeoPoint, target_m: int, n_points: int
                         d2 = sres2.loop.distance_m
                         samples.append((R_next, d2))
                         e2 = d2 - target_m
-                        if abs(e2) <= tol_m:
+                        if abs(e2) <= tight:
                             metrics2 = _loop_metrics(sres2.loop, target_m)
                             score2 = score_route(target_m, sres2.loop, metrics2).total
                             # 重建版已消除大绕行：达标且评分回落 ≤5 即采用。

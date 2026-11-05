@@ -27,11 +27,13 @@ from .types import Candidate, GenerateOptions, GenerateResult
 def adaptive_n_points(target_m: int) -> int:
     """按目标距离选择控制点数量（实测标定）。
 
-    蔡甸区实测：15km 用 7 个点会因骨架形状无法跨过距离断层而失败（+1217m），
-    8 个点则 9.2s/35 次调用达标（-390m）；点太多（10）会更慢。
-    因此 5km→5、10km→6、15km→9、20km→10。
+    阶段 N：≤3km 用 8 点——街区/校园尺度需要足够拐点贴合真实路网，
+    5 点在 1km 目标下会让每段长约 110m，只能贴墙穿巷（实测 586m/−41%）。
+    长距离沿用阶段 J/K 标定：5km→5、10km→6、15km→9、20km→10。
     """
     km = target_m / 1000.0
+    if km <= 3:
+        return 8
     if km <= 7:
         return 5
     if km <= 12:

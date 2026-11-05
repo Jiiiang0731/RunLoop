@@ -76,5 +76,31 @@ class TestPlanVariants(unittest.TestCase):
             v.n_points = 7  # type: ignore[misc]
 
 
+class TestShortDistanceGrid(unittest.TestCase):
+    """阶段 N：≤3km 用「半径×形状」确定性网格，取代会振荡的 R 定点迭代。"""
+
+    def test_grid_variants_single_build(self):
+        vs = plan_variants(1000, 8, 1)
+        self.assertGreaterEqual(len(vs), 4)
+        for v in vs:
+            self.assertEqual(v.max_iters, 1, "网格变体只建一次，不做 R 迭代")
+            self.assertGreaterEqual(v.n_points, 8, "街区尺度需要足够控制点")
+        # 形状覆盖矩形与圆（城市街区更接近矩形）
+        shapes = {v.shape for v in vs}
+        self.assertIn("rect", shapes)
+        self.assertIn("ring", shapes)
+        # 半径倍率分散，覆盖不同的自然闭环尺度
+        factors = sorted(v.radius_factor for v in vs)
+        self.assertLess(factors[0], 1.0)
+        self.assertGreater(factors[-1], 1.3)
+
+    def test_medium_distance_keeps_legacy_variants(self):
+        vs = plan_variants(5000, 5, 3)
+        self.assertEqual([v.label for v in vs], ["base"])
+
+    def test_grid_deterministic(self):
+        self.assertEqual(plan_variants(2500, 8, 4), plan_variants(2500, 8, 4))
+
+
 if __name__ == "__main__":
     unittest.main()

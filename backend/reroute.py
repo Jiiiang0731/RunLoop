@@ -75,6 +75,7 @@ class RerouteResult:
     remaining_m: float = 0.0             # 连接段 + 原路线剩余
     estimated_total_m: float = 0.0       # completed + remaining（诚实口径）
     within_tolerance: bool = False
+    tol_effective_m: float = 0.0         # 实际使用的容差（相对目标，阶段 N）
     candidates: List[RejoinCandidate] = field(default_factory=list)
     api_calls: int = 0
     elapsed_s: float = 0.0
@@ -216,6 +217,9 @@ def reroute(planner: MapPlanner,
                                    budget=max_calls)
     api_calls = 0
     evaluated: List[RejoinCandidate] = []
+    # 阶段 N：重规划也按相对目标判达标（±500m 是上限，不是合格线）。
+    # 1km→50m、2.5km→125m、5km→250m，长距离仍受 ±500m 约束。
+    rel_tol = min(float(tol_m), max(30.0, 0.05 * float(target_m)))
 
     for c in cands:
         if api_calls >= max_calls:
@@ -234,7 +238,13 @@ def reroute(planner: MapPlanner,
         c.turns = _count_turns(res.steps)
         c.score = c.extra_m + _TURN_PENALTY_M * c.turns
         c.estimated_total_m = completed_m + res.distance_m + (total - c.along_m)
-        c.within_tolerance = abs(c.estimated_total_m - target_m) <= tol_m
+        c.within_tolerance = abs(c.estimated_total_m - target_m) <= rel_tol
+        # 评分（阶段 N 修正）：以「保持目标里程」为第一目标，其次连接段短、
+        # 转弯少。旧式 extra_m=connector-skipped 会奖励「跳过更多原路线」，
+        # 实测把 1km 路线缩成 604m 还判达标——废弃。
+        c.score = (abs(c.estimated_total_m - target_m)
+                   + 0.5 * res.distance_m
+                   + _TURN_PENALTY_M * c.turns)
         c.plan = res  # 暂存连接结果供选中后使用（候选 ≤6，内存可忽略）
         evaluated.append(c)
 
@@ -287,6 +297,7 @@ def reroute(planner: MapPlanner,
         remaining_m=round(remaining_m, 1),
         estimated_total_m=round(estimated_total, 1),
         within_tolerance=bool(chosen.within_tolerance),
+        tol_effective_m=round(rel_tol, 1),
         candidates=evaluated,
         api_calls=api_calls,
         elapsed_s=time.time() - t0,
