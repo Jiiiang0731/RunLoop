@@ -96,6 +96,19 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
 
   bool _ending = false;
 
+  // ---- 阶段 N：实时导航 tick（锁屏/后台可用）----
+  /// 旧实现把「地图匹配 / 偏航状态机 / 语音播报 / 公里分段 / 目标播报」
+  /// 全部放在 build() 里；而 Flutter 在 AppLifecycleState.paused 时
+  /// `SchedulerBinding.framesEnabled=false`（flutter/packages/flutter/lib/src/
+  /// scheduler/binding.dart:424-426, :947），锁屏后不再出帧、build 不执行，
+  /// 导致「GPS 在记录但完全没有语音」。现在改由 recorder 监听 + 1s 兜底
+  /// 定时器驱动（事件循环不受帧影响），build 只做渲染。
+  RouteProjection? _lastProj;
+  bool _lastOffRoute = false;
+  Timer? _navTickTimer;
+  DateTime? _lastNavTickAt;
+  int _heartbeatSec = 0;
+
   // ---- 倒计时（模块 C）----
   bool _showCountdown = true;
   bool _started = false; // GO 已触发（计时已开始）
@@ -207,6 +220,11 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
     _compass.start();
     _loadIcons();
     _initVoice();
+    // 阶段 N：导航逻辑由数据驱动（recorder 变更 + 1s 兜底），不依赖出帧
+    _recorder.addListener(_onNavTick);
+    _navTickTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      _onNavTick();
+    });
   }
 
   /// 生命周期日志（任务书 2.3：锁屏语音问题凭日志还原时间线）。
@@ -238,6 +256,8 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _navTickTimer?.cancel(); // 阶段 N：导航 tick 随页面消亡
+    _recorder.removeListener(_onNavTick);
     _toastTimer?.cancel();
     _rerouteRetryTimer?.cancel();
     _camTimer?.cancel(); // 相机定时器随页面消亡，无残留
@@ -510,8 +530,44 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
     return proj;
   }
 
+  /// 阶段 N：数据驱动的导航 tick（锁屏/后台照常执行）。
+  ///
+  /// 事件循环（定位流回调、定时器）不依赖 Flutter 出帧，因此在
+  /// `AppLifecycleState.paused` 下仍会运行——这正是锁屏后语音能继续的前提。
+  /// 每 30s 写一条心跳日志（含点数/公里/FGS 状态），真机可据此证明
+  /// 锁屏期间逻辑仍在跑（VoiceLog「tick 心跳」条目）。
+  void _onNavTick() {
+    if (!mounted) return;
+    final DateTime now = DateTime.now();
+    if (_lastNavTickAt != null &&
+        now.difference(_lastNavTickAt!).inMilliseconds < 250) {
+      return; // 同一轮事件里 recorder 通知与兜底定时器重复触发：去抖
+    }
+    _lastNavTickAt = now;
+    _heartbeatSec++;
+    if (_started && _heartbeatSec % 30 == 0) {
+      VoiceLog.instance.log(VoiceLogKind.fgs, 'tick',
+          detail: '心跳 n=${_recorder.pointCount} '
+              'km=${(_recorder.distanceMeters / 1000).toStringAsFixed(2)} '
+              'fgs=${ForegroundRunService.running} '
+              'status=${_navState.status.name}');
+    }
+    if (!_started || _activePath == null) return;
+    final List<TrackPoint> pts = _recorder.points;
+    if (pts.isEmpty) return;
+    final TrackPoint last = pts.last;
+    final RouteProjection? proj =
+        _mapMatch(LatLng(last.latitude, last.longitude));
+    _lastProj = proj;
+    // 偏航状态机（精度自适应阈值 + 连续点数 + 持续时间 + 方向不匹配）
+    _updateNavState(proj, pts);
+    _lastOffRoute = _navState.isOffRoute;
+    _onMatched(proj, pts, _lastOffRoute);
+    if (mounted) setState(() {});
+  }
+
   /// 每帧匹配驱动：方向平滑（模块 D）+ 语音播报（模块 A）+ 公里提示（模块 B）。
-  /// 全部幂等：build 多次执行不会重复播报/抖动。
+  /// 全部幂等：重复执行不会重复播报/抖动。
   void _onMatched(RouteProjection? proj, List<TrackPoint> pts, bool offRoute) {
     if (proj != null && !offRoute) {
       _hasFix = true;
@@ -1096,17 +1152,12 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
           // M-G：增量缓存——只换算新增点，不再每帧全表重映射。
           final List<LatLng> trackPts = _syncTrackLatLngs(pts);
 
-          // 地图匹配：进度 / 偏航状态机 / 下一转弯（阶段 M-D）
-          RouteProjection? proj;
-          if (trackPts.isNotEmpty && _activePath != null) {
-            proj = _mapMatch(trackPts.last);
-          }
-          // 偏航不再是「垂距 > 固定值」的布尔判断：状态机综合精度自适应
-          // 阈值、连续点数、持续时间与方向不匹配（任务书 5.1/5.2）。
-          _updateNavState(proj, pts);
-          final bool offRoute = _navState.isOffRoute;
+          // 阶段 N：build 只消费 _onNavTick 已算好的结果——不再在 build 里
+          // 驱动地图匹配/偏航状态机/语音播报（锁屏不出帧时 build 不执行，
+          // 会造成「GPS 在记录但完全没有语音」，这是阶段 M 的锁屏根因）。
+          final RouteProjection? proj = _lastProj;
+          final bool offRoute = _lastOffRoute;
           final NavStatus navStatus = _navState.status;
-          _onMatched(proj, pts, offRoute);
 
           final _TurnHint? hint =
               (proj != null && !offRoute) ? _nextTurnHint(proj.alongM) : null;
