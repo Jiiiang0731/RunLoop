@@ -89,10 +89,15 @@ class TestShortDistanceGrid(unittest.TestCase):
         shapes = {v.shape for v in vs}
         self.assertIn("rect", shapes)
         self.assertIn("ring", shapes)
-        # 半径倍率分散，覆盖不同的自然闭环尺度
+        # 偏移中心变体：覆盖「起点在环线一角」的自然环线（阶段 N 关键修复）
+        offsets = [v for v in vs if v.offset_factor > 0 and v.offset_dir_deg >= 0]
+        self.assertGreaterEqual(len(offsets), 2, "需要多个偏移方位的候选")
+        dirs = {v.offset_dir_deg for v in offsets}
+        self.assertGreaterEqual(len(dirs), 2)
+        # 半径倍率：至少有一个放大变体 + 基准变体
         factors = sorted(v.radius_factor for v in vs)
-        self.assertLess(factors[0], 1.0)
-        self.assertGreater(factors[-1], 1.3)
+        self.assertEqual(factors[0], 1.0)
+        self.assertGreater(factors[-1], 1.2)
 
     def test_medium_distance_keeps_legacy_variants(self):
         vs = plan_variants(5000, 5, 3)

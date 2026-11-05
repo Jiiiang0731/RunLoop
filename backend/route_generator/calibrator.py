@@ -52,6 +52,24 @@ def tight_tolerance(tol_m: float, target_m: int) -> float:
     return min(float(tol_m), max(30.0, 0.05 * float(target_m)))
 
 
+def variant_center(start, v, radius_m: float):
+    """骨架中心：起点，或按变体的偏移方位/倍率外移（阶段 N）。
+
+    自然环线常常不以起点为圆心（实测校园环线中心比起点偏移 ~450m），
+    同心圆骨架因此永远找不到它；偏移中心让搜索能覆盖「起点在环线一角」
+    的形态。
+    """
+    if v.offset_factor <= 0 or v.offset_dir_deg < 0:
+        return start
+    off = v.offset_factor * radius_m
+    brg = math.radians(v.offset_dir_deg)
+    d_north = math.cos(brg) * off
+    d_east = math.sin(brg) * off
+    lat = start[1] + d_north / 110574.0
+    lng = start[0] + d_east / (111320.0 * math.cos(math.radians(start[1])))
+    return (lng, lat)
+
+
 def _loop_metrics(loop: LoopRoute, target_m: int) -> dict:
     all_steps = []
     for seg in loop.segments:
@@ -143,7 +161,7 @@ def calibrate(planner: MapPlanner, start: GeoPoint, target_m: int, n_points: int
         for it in range(iters):
             if max_calls is not None and calls >= max_calls:
                 break
-            wps = generate_ring(start, R, v.n_points, seed,
+            wps = generate_ring(variant_center(start, v, R), R, v.n_points, seed,
                                 jitter=v.jitter, aspect=v.aspect,
                                 angle_deg=v.angle_deg, shape=v.shape)
             loop, c = build_loop(planner, start, wps, sleep=sleep)
@@ -249,11 +267,13 @@ def calibrate(planner: MapPlanner, start: GeoPoint, target_m: int, n_points: int
                             history.append({"event": "spur_recal_abort",
                                             "R_mult": round(R_next / best_R, 3)})
                             break
-                        wps = generate_ring(start, R_next, best_variant.n_points, seed,
-                                            jitter=best_variant.jitter,
-                                            aspect=best_variant.aspect,
-                                            angle_deg=best_variant.angle_deg,
-                                            shape=best_variant.shape)
+                        wps = generate_ring(
+                            variant_center(start, best_variant, R_next),
+                            R_next, best_variant.n_points, seed,
+                            jitter=best_variant.jitter,
+                            aspect=best_variant.aspect,
+                            angle_deg=best_variant.angle_deg,
+                            shape=best_variant.shape)
                         loop2, c2 = build_loop(planner, start, wps, sleep=sleep)
                         calls += c2
                         if loop2.error:

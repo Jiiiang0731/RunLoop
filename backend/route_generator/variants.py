@@ -28,6 +28,10 @@ class SkeletonVariant:
     label: str          # 展示/日志用标签
     shape: str = "ring"  # 骨架曲线：ring / fig8 / petal / rect（阶段 N）
     radius_factor: float = 1.0  # 阶段 N：短距离网格的半径倍率（相对 R_init）
+    # 阶段 N：骨架中心相对起点的偏移（自然环线常常不以起点为圆心——
+    # 实测校园环线中心比起点偏移约 450m，同心圆骨架因此永远找不到它）。
+    offset_dir_deg: float = -1.0   # 偏移方位（正北顺时针；-1 = 不偏移）
+    offset_factor: float = 0.0     # 偏移量 = offset_factor × R
 
 
 def lean_n_points(n_points: int) -> int:
@@ -66,14 +70,24 @@ def plan_variants(target_m: int, n_points: int, seed: int,
             # 中等矩形：城市街区/校园外围最常见的自然形态（周长与圆等长）
             SkeletonVariant(n, 1.0, a, 0.0, 1, "grid_rect", shape="rect"),
             SkeletonVariant(n, 1.0, a, 0.05, 1, "grid_ring"),
+            # 偏移中心：覆盖「起点在环线一角」的自然环线（校园/公园/街区外围）
+            SkeletonVariant(n, 1.0, 135.0, 0.05, 1, "grid_off_se",
+                            shape="rect", offset_dir_deg=135.0,
+                            offset_factor=0.9),
+            SkeletonVariant(n, 1.0, 45.0, 0.05, 1, "grid_off_ne",
+                            shape="rect", offset_dir_deg=45.0,
+                            offset_factor=0.9),
+            SkeletonVariant(n, 1.0, 225.0, 0.05, 1, "grid_off_sw",
+                            shape="rect", offset_dir_deg=225.0,
+                            offset_factor=0.9),
+            SkeletonVariant(n, 1.0, 315.0, 0.05, 1, "grid_off_nw",
+                            shape="rect", offset_dir_deg=315.0,
+                            offset_factor=0.9),
             SkeletonVariant(n, 1.0, a + 30, 0.04, 1, "grid_rect_big",
                             shape="rect", radius_factor=1.25),
-            SkeletonVariant(n, 1.0, a + 30, 0.05, 1, "grid_ring_small",
-                            radius_factor=0.80),
-            SkeletonVariant(n, 1.0, a + 60, 0.06, 1, "grid_ring_big",
-                            radius_factor=1.20),
-            SkeletonVariant(n, 1.0, a + 60, 0.06, 1, "grid_rect_xl",
-                            shape="rect", radius_factor=1.45),
+            SkeletonVariant(n, 1.0, 135.0, 0.05, 1, "grid_off_se_big",
+                            shape="rect", offset_dir_deg=135.0,
+                            offset_factor=1.25),
         ]
     lean_n = lean_n_points(n_points)
     base = SkeletonVariant(n_points=n_points, aspect=1.0, angle_deg=0.0,
