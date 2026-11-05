@@ -16,8 +16,10 @@ import '../services/nav/foreground_run_service.dart';
 import '../services/nav/heading_controller.dart';
 import '../services/nav/nav_announcer.dart';
 import '../services/nav/nav_settings.dart';
+import '../services/nav/nav_state.dart';
 import '../services/nav/tts_service.dart';
 import '../services/nav/voice_log.dart';
+import '../services/route_api/reroute_api.dart';
 import '../services/run_recorder/run_recorder.dart';
 import '../utils/geo.dart' hide haversineMeters;
 import '../utils/map_icons.dart';
@@ -111,6 +113,43 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
   bool _hasFix = false; // 已成功匹配过一次
   double _alongForDraw = 0; // 驱动完成/剩余折线拆分
 
+  // ---- 动态重规划（阶段 M-D/E，任务书 5.1–5.8） ----
+  /// 当前导航基准路径：初始 = 规划路线；重规划成功后原子切换为
+  /// 「连接段 + 原剩余」合并路线。原规划折线 [_plannedPts] 永不修改
+  ///（已跑部分与 GPS 轨迹绝不覆盖，5.4#2/#3）。
+  RoutePath? _activePath;
+  List<LatLng> _activePts = const <LatLng>[];
+
+  /// 当前有效 steps（重规划后 = 连接段 steps + 原剩余 steps 重定基）。
+  List<RouteStep> _activeSteps = const <RouteStep>[];
+
+  final NavStateMachine _navState = NavStateMachine();
+  final RerouteClient _rerouteClient = RerouteClient();
+
+  /// 已消费的定位点时间戳（同一 GPS 点绝不重复投票）。
+  DateTime? _lastNavSampleAt;
+
+  /// 在飞请求锁 + 请求 ID（5.7#5/#6：一次偏航事件只允许一个请求，
+  /// 过期结果按 ID 丢弃）。
+  bool _rerouteInFlight = false;
+  int _rerouteReqId = 0;
+  int _rerouteAutoAttempts = 0;
+  DateTime? _rerouteCooldownUntil;
+  Timer? _rerouteRetryTimer;
+  static const int _maxAutoRerouteAttempts = 2;
+  static const Duration _rerouteCooldown = Duration(seconds: 30);
+
+  /// 已应用的连接段折线（琥珀色绘制，视觉上与原路线明显区分）。
+  List<LatLng>? _connectorPts;
+
+  /// 连接段终点（=接回点）在**新** active 路径上的里程：越过即播
+  /// 「已重新接回原定路线」（5.8）。
+  double? _rejoinAlongActive;
+  bool _rejoinAnnounced = false;
+
+  /// 容差告警（5.5：新总里程超出原目标时如实展示，可关闭）。
+  String? _rerouteWarning;
+
   // ---- 公里提示（模块 B）----
   int _lastCompletedKm = 0;
   KmSplit? _toastSplit;
@@ -135,6 +174,9 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
       _plannedPts =
           route.polyline.map((List<double> p) => LatLng(p[1], p[0])).toList();
       _plannedPath = RoutePath.fromPoints(_plannedPts);
+      _activePath = _plannedPath;
+      _activePts = _plannedPts;
+      _activeSteps = route.steps;
     }
     // 注意：不在这里 start()——倒计时 GO 时刻才开始计时（规范 4.2）。
     // 相机目标由 build 中的 _onMatched 驱动（1Hz），渲染由 _camTimer（20Hz）驱动。
@@ -174,6 +216,7 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _toastTimer?.cancel();
+    _rerouteRetryTimer?.cancel();
     _camTimer?.cancel(); // 相机定时器随页面消亡，无残留
     _compass.dispose();
     if (_started) {
@@ -430,7 +473,7 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
   // ---------- 地图匹配（沿线进度 / 偏航） ----------
 
   RouteProjection? _mapMatch(LatLng p) {
-    final RoutePath? path = _plannedPath;
+    final RoutePath? path = _activePath;
     if (path == null) return null;
     RouteProjection proj = path.projectNear(p, _lastAlong, _matchWindowM);
     if (proj.offsetM > _offRouteMeters) {
@@ -460,7 +503,7 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
         ? 1.0
         : ((nowMs - _lastHeadingAtMs!) / 1000.0).clamp(0.05, 5.0);
     _lastHeadingAtMs = nowMs;
-    final RoutePath? path = _plannedPath;
+    final RoutePath? path = _activePath;
     _heading.update(
       speed: last.speed,
       accuracy: last.accuracy,
@@ -493,6 +536,18 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
       alongM: proj?.alongM ?? _alongForDraw,
       offRoute: offRoute,
     );
+
+    // ---- 重规划接回确认（5.8）：新路径上越过连接段终点 = 接回原路线 ----
+    if (_rejoinAlongActive != null &&
+        !_rejoinAnnounced &&
+        !offRoute &&
+        proj != null &&
+        proj.alongM >= _rejoinAlongActive!) {
+      _rejoinAnnounced = true;
+      VoiceLog.instance.log(VoiceLogKind.system, 'reroute',
+          detail: '已重新接回原定路线（along=${proj.alongM.round()}m）');
+      unawaited(_tts.speak('已重新接回原定路线', flush: false));
+    }
 
     // ---- 公里完成检测（completedKm 变大 = 刚跨过 1000m 边界） ----
     if (_recorder.completedKm > _lastCompletedKm) {
@@ -536,16 +591,212 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
     if (mounted) setState(() {});
   }
 
+  // ---------- 动态重规划编排（阶段 M-D/E，任务书 5.2–5.8） ----------
+
+  /// 每帧把匹配结果喂给状态机；迁移边沿驱动副作用（语音/请求）。
+  /// 检测是多因子的：精度自适应阈值 + 连续点数 + 持续时间 + 方向不匹配
+  ///（NavStateMachine/DeviationConfig），绝不是一刀切的固定距离布尔值。
+  void _updateNavState(RouteProjection? proj, List<TrackPoint> pts) {
+    if (!_started || proj == null || pts.isEmpty) return;
+    final TrackPoint last = pts.last;
+    // 同一 GPS 点只投一票：builder 可能因其他 setState 重跑多次
+    if (last.timestamp == _lastNavSampleAt) return;
+    _lastNavSampleAt = last.timestamp;
+    final RoutePath? path = _activePath;
+    final double? routeBearing =
+        (path != null && proj.offsetM < _matchWindowM)
+            ? path.at(proj.alongM).bearing
+            : null;
+    final NavStatus before = _navState.status;
+    final bool changed = _navState.update(
+      offsetM: proj.offsetM,
+      accuracyM: last.accuracy,
+      headingDeg: _heading.heading,
+      routeBearingDeg: routeBearing,
+      now: DateTime.now(),
+    );
+    if (!changed) return;
+    if (_navState.status == NavStatus.offRoute) {
+      _onDeviationConfirmed(proj.offsetM);
+    } else if (_navState.status == NavStatus.onRoute &&
+        (before == NavStatus.offRoute ||
+            before == NavStatus.rerouting ||
+            before == NavStatus.rerouteFailed)) {
+      _onBackOnRoute();
+    }
+  }
+
+  /// 偏航确认（5.3）：旧步骤播报立即停止、待发语音队列清空、
+  /// 显示「正在重新规划」、发起真实重规划请求。GPS 采集与轨迹绝不中断。
+  void _onDeviationConfirmed(double offsetM) {
+    VoiceLog.instance.log(VoiceLogKind.system, 'reroute',
+        detail: '偏航确认 offset=${offsetM.round()}m，停播旧提示并发起重规划');
+    _announcer.suspendForReroute(); // 5.3#1/#2/#5
+    _rerouteAutoAttempts = 0; // 新的偏航事件重置自动重试计数（5.7#5）
+    _tryReroute(auto: true); // 同步段完成锁检查与状态迁移
+    if (_navState.status != NavStatus.rerouting && mounted) {
+      // 冷却期/自动次数用尽：如实提示，保留手动重试入口
+      unawaited(_tts.speak('路线已偏离，请返回原定路线', flush: true));
+    }
+  }
+
+  /// 自然跑回原路线（未接入重规划结果）：恢复播报。
+  void _onBackOnRoute() {
+    VoiceLog.instance.log(VoiceLogKind.system, 'reroute',
+        detail: '已自行回到原路线（status→onRoute）');
+    _announcer.onResume(alongM: _lastAlong ?? _alongForDraw);
+    unawaited(_tts.speak('已回到规划路线', flush: false));
+    _rerouteAutoAttempts = 0;
+    if (mounted) setState(() {});
+  }
+
+  /// 发起重规划请求（5.7：在飞锁 + 请求 ID + 冷却 + 自动次数上限）。
+  /// 手动重试（auto=false）不受冷却与次数限制，但仍受状态机锁约束。
+  Future<void> _tryReroute({required bool auto}) async {
+    if (_rerouteInFlight) return; // 5.7#6：移动中已有在飞请求，不重复发起
+    final RoutePath? path = _activePath;
+    final List<TrackPoint> pts = _recorder.points;
+    if (path == null || pts.isEmpty || path.points.length < 2) return;
+    final DateTime now = DateTime.now();
+    if (auto) {
+      if (_rerouteCooldownUntil != null &&
+          now.isBefore(_rerouteCooldownUntil!)) {
+        return;
+      }
+      if (_rerouteAutoAttempts >= _maxAutoRerouteAttempts) return;
+    }
+    if (!_navState.beginReroute()) return; // 状态机锁：仅 offRoute/rerouteFailed 可进入
+    final int reqId = ++_rerouteReqId;
+    _rerouteInFlight = true;
+    if (auto) _rerouteAutoAttempts++;
+    unawaited(_tts.speak('路线偏离，正在重新规划', flush: true)); // 5.3#4
+    if (mounted) setState(() {});
+
+    final TrackPoint last = pts.last;
+    final double target = widget.targetM ?? _plannedPath?.total ?? 0;
+    try {
+      final ReroutePlan plan = await _rerouteClient.request(
+        lng: last.longitude,
+        lat: last.latitude,
+        headingDeg: _heading.heading,
+        polyline: path.points
+            .map((LatLng p) => <double>[p.longitude, p.latitude])
+            .toList(),
+        alongM: _lastAlong ?? 0,
+        targetM: target,
+        completedM: _recorder.distanceMeters,
+      );
+      if (!mounted || reqId != _rerouteReqId) return; // 过期结果直接丢弃
+      if (_navState.status != NavStatus.rerouting) {
+        // 在飞期间用户已自然跑回 → 结果作废（5.7#6），状态已是 onRoute
+        VoiceLog.instance.log(VoiceLogKind.system, 'reroute',
+            detail: '请求返回时已回到原路线，丢弃结果 ${plan.rerouteId}');
+        return;
+      }
+      _navState.rerouteSucceeded(); // rerouting → rerouted
+      _applyReroute(plan); // 原子接入 → acceptNewRoute() → onRoute
+    } catch (e) {
+      if (!mounted || reqId != _rerouteReqId) return;
+      _navState.rerouteFailure(); // rerouting → rerouteFailed
+      _rerouteCooldownUntil = DateTime.now().add(_rerouteCooldown);
+      VoiceLog.instance.log(VoiceLogKind.error, 'reroute',
+          detail: '重规划失败: $e');
+      // 5.7#9：断网/后端不可用——语音如实提示，运动继续记录，绝不结束
+      unawaited(_tts.speak('暂时无法重新规划路线，将继续记录本次运动', flush: true));
+      // 冷却期后自动再试一次（受自动次数上限约束）；手动按钮始终可用
+      _rerouteRetryTimer?.cancel();
+      _rerouteRetryTimer = Timer(_rerouteCooldown, () {
+        if (mounted && _navState.status == NavStatus.rerouteFailed) {
+          _tryReroute(auto: true);
+        }
+      });
+      if (mounted) setState(() {});
+    } finally {
+      if (reqId == _rerouteReqId) _rerouteInFlight = false;
+    }
+  }
+
+  /// 5.4#8–#11：新路线版本原子接入。
+  /// 原路线已跑部分与 GPS 轨迹绝不修改——只切换导航基准与播报 steps。
+  void _applyReroute(ReroutePlan plan) {
+    final List<LatLng> merged = plan.mergedRemainingPolyline
+        .map((List<double> p) => LatLng(p[1], p[0]))
+        .toList();
+    if (merged.length < 2) {
+      _navState.rerouteFailure();
+      return;
+    }
+    final List<RouteStep> newSteps = _rebaseSteps(plan);
+    final List<LatLng> connector = plan.connectorPolyline
+        .map((List<double> p) => LatLng(p[1], p[0]))
+        .toList();
+    setState(() {
+      _activePath = RoutePath.fromPoints(merged);
+      _activePts = merged;
+      _activeSteps = newSteps;
+      _connectorPts = connector.length >= 2 ? connector : null;
+      _rejoinAlongActive = plan.connectorM; // 越过它 = 接回原剩余路线
+      _rejoinAnnounced = false;
+      _lastAlong = null; // 新路径首帧全局投影重锚定
+      _alongForDraw = 0;
+      _hasFix = false; // 「active 已跑段」重新起算；GPS 轨迹独立不受影响
+      if (plan.withinTolerance) {
+        _rerouteWarning = null;
+      } else {
+        // 5.5：超出目标容差时如实展示新预计总里程，绝不伪装达标
+        final double overKm = (plan.estimatedTotalM - plan.targetM) / 1000;
+        _rerouteWarning = '新路线预计总里程 '
+            '${(plan.estimatedTotalM / 1000).toStringAsFixed(1)} 公里'
+            '（比原目标多 ${overKm.toStringAsFixed(1)} 公里）';
+      }
+    });
+    VoiceLog.instance.log(VoiceLogKind.system, 'reroute',
+        detail: '接入新路线 ${plan.rerouteId}: 连接段=${plan.connectorM.round()}m '
+            '接回点@${plan.rejoinAlongM.round()}m 跳过=${plan.skippedM.round()}m '
+            '新剩余=${plan.remainingM.round()}m 预计总=${plan.estimatedTotalM.round()}m '
+            'within=${plan.withinTolerance} api=${plan.apiCalls} '
+            '耗时=${plan.elapsedS}s');
+    // 5.8：旧步骤 ID 与队列全部作废，语音在新 steps 上重建
+    _announcer.rebind(
+      newSteps,
+      announcement: plan.withinTolerance
+          ? '路线已经重新规划，请沿当前道路继续前进'
+          : '路线已经重新规划，新路线比原目标略长，请沿当前道路继续前进',
+    );
+    _navState.acceptNewRoute(); // rerouted → onRoute（接入完成）
+  }
+
+  /// 原剩余 steps 重定基到新路径：接回点之前的步骤作废（连同被跳过的
+  /// 路段），其余平移 `connectorM - rejoinAlongM`。连接段 steps 在前。
+  List<RouteStep> _rebaseSteps(ReroutePlan plan) {
+    final List<RouteStep> out = List<RouteStep>.of(plan.connectorSteps);
+    for (final RouteStep s in _activeSteps) {
+      if (s.cumulativeM < plan.rejoinAlongM - 1) continue;
+      out.add(RouteStep(
+        instruction: s.instruction,
+        road: s.road,
+        distanceM: s.distanceM,
+        cumulativeM: plan.connectorM + (s.cumulativeM - plan.rejoinAlongM),
+        action: s.action,
+        orientation: s.orientation,
+        polyline: s.polyline,
+      ));
+    }
+    return out;
+  }
+
   // ---------- 覆盖物（稳定 id，插件按 id 原地增量更新） ----------
 
-  /// 视觉融合（模块 E）：规划线拆成「已跑（低权重蓝灰）」+「剩余（渐变主线）」，
-  /// GPS 实际轨迹（橙 + 白描边）压在最上——三者数据各自独立，展示层合成。
-  /// 偏航时橙色轨迹离开蓝色剩余线，真实偏离清晰可见，绝不被遮盖。
+  /// 视觉融合（模块 E）：导航基准线拆成「已跑（低权重蓝灰）」+「剩余（渐变
+  /// 主线）」，GPS 实际轨迹（橙 + 白描边）压在最上——三者数据各自独立，
+  /// 展示层合成。偏航时橙色轨迹离开蓝色剩余线，真实偏离清晰可见，绝不被
+  /// 遮盖。阶段 M-D：基准线 = _activePath（重规划后为合并路线），连接段
+  /// 以琥珀色单独绘制（6.3：rerouteSegment 与原路线明显区分）。
   Set<Polyline> _buildPolylines(List<LatLng> trackPts) {
     final Set<Polyline> lines = <Polyline>{};
-    final RoutePath? path = _plannedPath;
-    if (path != null && _plannedPts.length >= 2) {
-      List<LatLng> remaining = _plannedPts;
+    final RoutePath? path = _activePath;
+    if (path != null && _activePts.length >= 2) {
+      List<LatLng> remaining = _activePts;
       List<LatLng>? completed;
       if (_hasFix && _started) {
         final double along = _alongForDraw.clamp(0.0, path.total);
@@ -582,6 +833,26 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
           zIndex: RouteStyle.zCore,
         )..setIdForCopy('planned-core'));
       }
+    }
+    // ---- 重规划连接段（琥珀色，真实步行道路，5.6 connector 折线） ----
+    final List<LatLng>? connector = _connectorPts;
+    if (connector != null && connector.length >= 2) {
+      lines.add(Polyline(
+        points: connector,
+        color: RouteStyle.casingColor,
+        width: RouteStyle.rerouteCasingWidth,
+        capType: CapType.round,
+        joinType: JoinType.round,
+        zIndex: RouteStyle.zRerouteCasing,
+      )..setIdForCopy('reroute-casing'));
+      lines.add(Polyline(
+        points: connector,
+        color: RouteStyle.rerouteColor,
+        width: RouteStyle.rerouteCoreWidth,
+        capType: CapType.round,
+        joinType: JoinType.round,
+        zIndex: RouteStyle.zReroute,
+      )..setIdForCopy('reroute-core'));
     }
     if (trackPts.length >= 2) {
       lines.add(Polyline(
@@ -665,7 +936,7 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
 
   /// 下一转弯：规划 steps 中首个在当前位置前方的转向动作（真实高德步骤）。
   _TurnHint? _nextTurnHint(double alongM) {
-    final List<RouteStep> steps = widget.plannedRoute?.steps ?? const <RouteStep>[];
+    final List<RouteStep> steps = _activeSteps;
     for (final RouteStep s in steps) {
       if (s.cumulativeM <= alongM + 20) continue;
       final IconData? icon = _turnIcons[s.action];
@@ -730,13 +1001,16 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
               .map((TrackPoint p) => LatLng(p.latitude, p.longitude))
               .toList();
 
-          // 地图匹配：进度 / 偏航 / 下一转弯
+          // 地图匹配：进度 / 偏航状态机 / 下一转弯（阶段 M-D）
           RouteProjection? proj;
-          if (trackPts.isNotEmpty && _plannedPath != null) {
+          if (trackPts.isNotEmpty && _activePath != null) {
             proj = _mapMatch(trackPts.last);
           }
-          final bool offRoute =
-              proj != null && proj.offsetM > _offRouteMeters && pts.length > 3;
+          // 偏航不再是「垂距 > 固定值」的布尔判断：状态机综合精度自适应
+          // 阈值、连续点数、持续时间与方向不匹配（任务书 5.1/5.2）。
+          _updateNavState(proj, pts);
+          final bool offRoute = _navState.isOffRoute;
+          final NavStatus navStatus = _navState.status;
           _onMatched(proj, pts, offRoute);
 
           final _TurnHint? hint =
@@ -747,8 +1021,8 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
               ? (_recorder.distanceMeters / targetM).clamp(0.0, 1.0)
               : 0.0;
           final double? remainPlannedM =
-              (proj != null && _plannedPath != null && !offRoute)
-                  ? (_plannedPath!.total - proj.alongM)
+              (proj != null && _activePath != null && !offRoute)
+                  ? (_activePath!.total - proj.alongM)
                   : null;
 
           return Stack(
@@ -799,16 +1073,18 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
                               ),
                             ),
                           ),
-                        // ---- 顶部：偏航告警 / 下一转弯大卡片 / 语音故障提示 ----
+                        // ---- 顶部：偏航/重规划横幅 / 下一转弯大卡片 / 语音故障提示 ----
                         if (offRoute)
                           Positioned(
                             top: 10,
                             left: 12,
                             right: 12,
-                            child: _Banner(
-                              icon: Icons.warning_amber_rounded,
-                              color: Colors.deepOrange,
-                              text: '已偏离规划路线约 ${proj.offsetM.round()} m，请返回蓝色路线',
+                            child: _RerouteBanner(
+                              status: navStatus,
+                              offsetM: proj?.offsetM ?? 0,
+                              onRetry: _rerouteInFlight
+                                  ? null
+                                  : () => _tryReroute(auto: false),
                             ),
                           )
                         else if (hint != null)
@@ -817,6 +1093,22 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
                             left: 12,
                             right: 12,
                             child: _TurnCard(hint: hint),
+                          ),
+                        // ---- 容差告警（5.5：新总里程超出原目标时如实展示） ----
+                        if (_rerouteWarning != null)
+                          Positioned(
+                            top: offRoute
+                                ? 64
+                                : (hint != null ? 96 : 10),
+                            left: 12,
+                            right: 12,
+                            child: _Banner(
+                              icon: Icons.info_outline,
+                              color: Colors.teal,
+                              text: _rerouteWarning!,
+                              onDismiss: () =>
+                                  setState(() => _rerouteWarning = null),
+                            ),
                           ),
                         if (_ttsProblem != null && NavSettings.instance.voiceNavEnabled)
                           Positioned(
@@ -1164,13 +1456,15 @@ class _GoalCard extends StatelessWidget {
   }
 }
 
-/// 地图顶部提示横幅（偏航告警 / 语音故障）。
+/// 地图顶部提示横幅（偏航告警 / 语音故障 / 容差告警，可带关闭按钮）。
 class _Banner extends StatelessWidget {
-  const _Banner({required this.icon, required this.color, required this.text});
+  const _Banner(
+      {required this.icon, required this.color, required this.text, this.onDismiss});
 
   final IconData icon;
   final Color color;
   final String text;
+  final VoidCallback? onDismiss;
 
   @override
   Widget build(BuildContext context) {
@@ -1187,6 +1481,91 @@ class _Banner extends StatelessWidget {
               child: Text(text,
                   style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w600)),
             ),
+            if (onDismiss != null)
+              InkWell(
+                onTap: onDismiss,
+                child: const Padding(
+                  padding: EdgeInsets.all(2),
+                  child: Icon(Icons.close, color: Colors.white70, size: 18),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// 偏航/重规划状态横幅（阶段 M-D，任务书 5.3#4 / 5.7#9）：
+/// - offRoute：已确认偏离（自动请求被冷却/次数限制时给手动入口）；
+/// - rerouting：「路线偏离，正在重新规划」+ 转圈；
+/// - rerouteFailed：无法重规划（断网/后端不可用）——运动继续记录，
+///   提供「重试」按钮；绝不自动结束运动。
+class _RerouteBanner extends StatelessWidget {
+  const _RerouteBanner({
+    required this.status,
+    required this.offsetM,
+    this.onRetry,
+  });
+
+  final NavStatus status;
+  final double offsetM;
+  final VoidCallback? onRetry;
+
+  @override
+  Widget build(BuildContext context) {
+    late final IconData icon;
+    late final Color color;
+    late final String text;
+    switch (status) {
+      case NavStatus.rerouting:
+        icon = Icons.gps_not_fixed;
+        color = Colors.deepOrange;
+        text = '路线偏离（约 ${offsetM.round()} 米），正在重新规划…';
+      case NavStatus.rerouteFailed:
+        icon = Icons.cloud_off;
+        color = Colors.red;
+        text = '暂时无法重新规划 · 运动仍在正常记录';
+      default:
+        icon = Icons.warning_amber_rounded;
+        color = Colors.deepOrange;
+        text = '已偏离规划路线约 ${offsetM.round()} 米，请返回蓝色路线';
+    }
+    return Material(
+      color: color.withAlpha(235),
+      borderRadius: BorderRadius.circular(10),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(12, 9, 6, 9),
+        child: Row(
+          children: <Widget>[
+            Icon(icon, color: Colors.white, size: 20),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(text,
+                  style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600)),
+            ),
+            if (status == NavStatus.rerouting)
+              const Padding(
+                padding: EdgeInsets.only(right: 6),
+                child: SizedBox(
+                  width: 14,
+                  height: 14,
+                  child: CircularProgressIndicator(
+                      strokeWidth: 2, color: Colors.white),
+                ),
+              )
+            else if (onRetry != null)
+              TextButton(
+                onPressed: onRetry,
+                style: TextButton.styleFrom(
+                  foregroundColor: Colors.white,
+                  visualDensity: VisualDensity.compact,
+                ),
+                child: const Text('重试'),
+              ),
           ],
         ),
       ),

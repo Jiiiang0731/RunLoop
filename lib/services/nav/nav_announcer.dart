@@ -222,6 +222,39 @@ class NavAnnouncer {
     _engine.stop();
   }
 
+  // ---------- 动态重规划衔接（阶段 M-D/E，任务书 5.3/5.8） ----------
+
+  /// 偏航确认：立即停播旧路线的一切语音并清空待发队列。
+  /// 旧步骤播报绝不再发出（5.3#1/#2/#5）；GPS 与里程继续由记录器采集。
+  void suspendForReroute() {
+    _paused = true;
+    _pendingKmText = null;
+    _pendingKmAt = null;
+    _engine.onIdle = null; // 掐断「空闲回调插播公里配速」路径
+    _engine.stop(); // 清空 TTS 队列——过期旧提示绝不播放
+  }
+
+  /// 重规划成功后原子绑定新版本 steps（5.4#9/#10、5.8）。
+  ///
+  /// 旧步骤 ID、已播集合、待发队列全部作废；[announcement] 用 flush
+  /// 立即播报（打断残留语音），随后按新步骤正常提前播报下一条转弯。
+  void rebind(List<RouteStep> steps, {String? announcement}) {
+    _steps = steps;
+    _announced.clear();
+    _offRoute = false;
+    _paused = false;
+    _prevAlong = null;
+    _pendingKmText = null;
+    _pendingKmAt = null;
+    _lastTurnAt = null;
+    _lastRoad = null;
+    _engine.onIdle = _onEngineIdle;
+    if (!_config.voiceNav) return;
+    if (announcement != null && announcement.isNotEmpty) {
+      _speak(announcement, flush: true);
+    }
+  }
+
   // ---------- 内部 ----------
 
   void _speakTurn(String text) {

@@ -345,4 +345,63 @@ void main() {
       expect(s.announcement(), '第 2 公里完成，本公里配速 6 分整');
     });
   });
+
+  group('重规划衔接（阶段 M-D/E，任务书 5.3/5.8）', () {
+    test('suspendForReroute：立即停播清队列，挂起期间旧步骤/公里全部静默', () {
+      final FakeEngine engine = FakeEngine();
+      final NavAnnouncer a = NavAnnouncer(engine: engine, config: TestConfig());
+      a.attach(<RouteStep>[_step('right', 500, road: '中山路')]);
+      engine.spoken.clear();
+
+      a.suspendForReroute();
+      expect(engine.stopCount, 1, reason: '5.3#2：待发语音队列必须清空');
+      expect(engine.onIdle, isNull, reason: '空闲回调插播路径必须掐断');
+
+      // 挂起期间：旧步骤进入播报窗口、公里完成——全部不得出声（5.3#1/#5）
+      a.onPosition(alongM: 452, offRoute: false);
+      a.onKmSplit(const KmSplit(index: 1, distanceM: 1000, seconds: 300));
+      expect(engine.spoken, isEmpty);
+    });
+
+    test('rebind：播报新版本宣告（flush），旧步骤作废、按新步骤播报', () {
+      final FakeEngine engine = FakeEngine();
+      final NavAnnouncer a = NavAnnouncer(engine: engine, config: TestConfig());
+      a.attach(<RouteStep>[_step('right', 500, road: '中山路')]);
+      a.suspendForReroute();
+      engine.spoken.clear();
+
+      a.rebind(<RouteStep>[_step('left', 300, road: '解放路')],
+          announcement: '路线已经重新规划，请沿当前道路继续前进');
+      expect(engine.spoken, <String>['路线已经重新规划，请沿当前道路继续前进']);
+      expect(engine.flushed.last, isTrue, reason: '5.8：打断一切残留语音');
+
+      // 新步骤按新里程正常提前播报
+      engine.spoken.clear();
+      a.onPosition(alongM: 252, offRoute: false); // 距新转弯 48m ≤ 50m
+      expect(engine.last, contains('左转'));
+      expect(engine.last, contains('解放路'));
+
+      // 旧步骤的里程（500）在新版本里绝不再触发任何播报
+      engine.spoken.clear();
+      a.onPosition(alongM: 295, offRoute: false);
+      expect(engine.spoken.where((String s) => s.contains('右转')), isEmpty);
+    });
+
+    test('rebind 后到位确认与公里播报恢复正常', () {
+      final FakeEngine engine = FakeEngine();
+      final NavAnnouncer a = NavAnnouncer(engine: engine, config: TestConfig());
+      a.attach(<RouteStep>[_step('right', 500, road: '中山路')]);
+      a.suspendForReroute();
+      a.rebind(<RouteStep>[_step('left', 300, road: '解放路')]);
+      engine.spoken.clear();
+
+      a.onPosition(alongM: 250, offRoute: false); // 提前播报
+      a.onPosition(alongM: 293, offRoute: false); // 越过 300-8 → 现在左转
+      expect(engine.spoken.any((String s) => s == '现在左转'), isTrue);
+
+      engine.finishSpeaking(); // 转弯语音播完 → 公里播报走直发路径
+      a.onKmSplit(const KmSplit(index: 5, distanceM: 1000, seconds: 330));
+      expect(engine.spoken.last, contains('第 5 公里完成'));
+    });
+  });
 }

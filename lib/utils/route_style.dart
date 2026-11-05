@@ -67,6 +67,14 @@ class RouteStyle {
   /// 标注距中心线的屏幕像素偏移（随缩放换算为米，两侧对称）。
   static const double turnAnnotationPxOffset = 16.0;
 
+  // ---------- 重规划连接段（阶段 M-D，任务书 6.3：与原路线明显区分） ----------
+  /// 琥珀色主线 + 白描边，压在蓝色剩余路线之上、GPS 轨迹之下。
+  static const Color rerouteColor = Color(0xFFFFB300);
+  static const double rerouteCoreWidth = 3.0;
+  static const double rerouteCasingWidth = 5.0;
+  static const double zRerouteCasing = 22;
+  static const double zReroute = 24;
+
   // ---------- 叠加顺序（值越大越靠上） ----------
   static const double zUnselected = 5;
   static const double zCasing = 10;
