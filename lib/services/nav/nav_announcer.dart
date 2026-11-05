@@ -83,7 +83,9 @@ class NavAnnouncer {
     if (!_config.voiceNav) return;
     final String firstRoad =
         steps.map((RouteStep s) => s.road).firstWhere((String r) => r.isNotEmpty, orElse: () => '');
-    _speak(firstRoad.isEmpty ? '开始跑步' : '开始跑步，沿$firstRoad前进', flush: false);
+    // 阶段 M-B：「开始跑步」已由倒计时语音播报（CountdownOverlay），这里以
+    // QUEUE_ADD 排队衔接出发方向信息，避免同一句话播两遍（任务书 3.1）。
+    _speak(firstRoad.isEmpty ? '出发' : '沿$firstRoad前进', flush: false);
   }
 
   /// 每次定位/匹配 tick 调用（约 1Hz）。

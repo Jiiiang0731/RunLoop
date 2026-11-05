@@ -17,6 +17,7 @@ import '../services/nav/heading_controller.dart';
 import '../services/nav/nav_announcer.dart';
 import '../services/nav/nav_settings.dart';
 import '../services/nav/tts_service.dart';
+import '../services/nav/voice_log.dart';
 import '../services/run_recorder/run_recorder.dart';
 import '../utils/geo.dart' hide haversineMeters;
 import '../utils/map_icons.dart';
@@ -51,7 +52,7 @@ class RunScreen extends StatefulWidget {
   State<RunScreen> createState() => _RunScreenState();
 }
 
-class _RunScreenState extends State<RunScreen> {
+class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
   /// 偏航判定阈值（米）：集中配置于 AppConfig（决策#6）。
   static const double _offRouteMeters = AppConfig.offRouteMeters;
 
@@ -115,6 +116,10 @@ class _RunScreenState extends State<RunScreen> {
   KmSplit? _toastSplit;
   Timer? _toastTimer;
 
+  // ---- 目标距离完成（阶段 M-C）----
+  bool _goalReached = false;
+  bool _goalDismissed = false;
+
   // ---- TTS 诊断（模块 A，绝不静默失败）----
   String? _ttsProblem;
 
@@ -133,9 +138,20 @@ class _RunScreenState extends State<RunScreen> {
     }
     // 注意：不在这里 start()——倒计时 GO 时刻才开始计时（规范 4.2）。
     // 相机目标由 build 中的 _onMatched 驱动（1Hz），渲染由 _camTimer（20Hz）驱动。
+    WidgetsBinding.instance.addObserver(this); // 锁屏/前后台切换写入语音日志
     _compass.start();
     _loadIcons();
     _initVoice();
+  }
+
+  /// 生命周期日志（任务书 2.3：锁屏语音问题凭日志还原时间线）。
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    VoiceLog.instance.log(
+      VoiceLogKind.lifecycle,
+      'run',
+      detail: '${state.name} started=$_started fgs=${ForegroundRunService.running}',
+    );
   }
 
   Future<void> _initVoice() async {
@@ -156,6 +172,7 @@ class _RunScreenState extends State<RunScreen> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _toastTimer?.cancel();
     _camTimer?.cancel(); // 相机定时器随页面消亡，无残留
     _compass.dispose();
@@ -165,7 +182,8 @@ class _RunScreenState extends State<RunScreen> {
       unawaited(ForegroundRunService.stop()); // 释放前台服务/通知
     }
     _recorder.dispose();
-    unawaited(_tts.dispose());
+    unawaited(_tts.dispose()); // 单例共享引擎：仅停止播报，不销毁
+    unawaited(VoiceLog.instance.saveSession()); // 锁屏会话日志留档
     _controller = null;
     super.dispose();
   }
@@ -210,7 +228,9 @@ class _RunScreenState extends State<RunScreen> {
     } catch (_) {
       // 权限失败不阻断跑步。
     }
-    await ForegroundRunService.start();
+    final bool ok = await ForegroundRunService.start();
+    VoiceLog.instance.log(VoiceLogKind.fgs, 'run',
+        detail: ok ? '前台服务已启动（location 型 + WakeLock）' : '前台服务启动失败！锁屏后可能被系统冻结');
   }
 
   void _onCountdownCancel() {
@@ -373,18 +393,22 @@ class _RunScreenState extends State<RunScreen> {
   // ---------- 暂停 / 继续 / 结束 ----------
 
   void _pause() {
-    _announcer.onPause(); // 先停语音（规范 2.4#5）
+    VoiceLog.instance.log(VoiceLogKind.system, 'run', detail: '暂停跑步');
+    _announcer.onPause(); // 先停语音（规范 2.4#5 / 任务书 2.2#7）
     _recorder.pause();
   }
 
   void _resume() {
+    VoiceLog.instance.log(VoiceLogKind.system, 'run', detail: '继续跑步');
     _recorder.resume();
     _announcer.onResume(alongM: _lastAlong ?? _alongForDraw);
   }
 
   Future<void> _end() async {
+    VoiceLog.instance.log(VoiceLogKind.system, 'run', detail: '结束运动');
     _announcer.onEnd(); // 立即停止并清空语音（规范 2.4#7）
     await ForegroundRunService.stop(); // 释放前台服务、通知、WakeLock
+    await VoiceLog.instance.saveSession(); // 本次会话日志留档（诊断页可回看）
     final RunRecord? record = _recorder.end();
     if (!mounted) return;
     if (record == null) {
@@ -485,6 +509,31 @@ class _RunScreenState extends State<RunScreen> {
         });
       }
     }
+
+    _checkGoal();
+  }
+
+  // ---------- 目标距离完成（阶段 M-C，任务书 4.2/4.3） ----------
+
+  /// GPS 有效累计距离达到用户设定目标 → 一次性事件：
+  /// 播报「N公里跑步目标已完成…」（排在本公里配速播报之后），
+  /// 屏幕出现「继续跑步 / 结束运动」卡片，绝不自动结束。
+  void _checkGoal() {
+    final double? target = widget.targetM;
+    if (_goalReached || target == null || target <= 0) return;
+    if (_recorder.distanceMeters < target) return;
+    _goalReached = true;
+    final double km = target / 1000;
+    final String kmLabel = (km - km.roundToDouble()).abs() < 0.01
+        ? '${km.round()}'
+        : km.toStringAsFixed(1);
+    final String text =
+        '$kmLabel公里跑步目标已完成，您可以选择继续跑步或结束本次运动。';
+    VoiceLog.instance.log(VoiceLogKind.system, 'goal', text: text);
+    // flush:false（QUEUE_ADD）：若目标公里恰逢整公里分段，配速播报先入队，
+    // 目标完成提示紧随其后——两种事件都播、顺序正确（任务书 4.2 示例）。
+    unawaited(_tts.speak(text, flush: false));
+    if (mounted) setState(() {});
   }
 
   // ---------- 覆盖物（稳定 id，插件按 id 原地增量更新） ----------
@@ -783,10 +832,24 @@ class _RunScreenState extends State<RunScreen> {
                         // ---- 公里完成轻提示（不遮挡地图中部） ----
                         if (_toastSplit != null)
                           Positioned(
-                            bottom: 16,
+                            bottom: (_goalReached && !_goalDismissed) ? 150 : 16,
                             left: 0,
                             right: 0,
                             child: Center(child: _KmToast(split: _toastSplit!)),
+                          ),
+                        // ---- 目标完成卡片（任务书 4.3：不自动结束，
+                        //      「继续跑步 / 结束运动」由用户选择） ----
+                        if (_goalReached && !_goalDismissed)
+                          Positioned(
+                            bottom: 16,
+                            left: 12,
+                            right: 12,
+                            child: _GoalCard(
+                              distanceMeters: _recorder.distanceMeters,
+                              onContinue: () =>
+                                  setState(() => _goalDismissed = true),
+                              onEnd: _end,
+                            ),
                           ),
                         // ---- 手动平移后的回中按钮 ----
                         if (!_followCamera)
@@ -889,11 +952,13 @@ class _RunScreenState extends State<RunScreen> {
                   ),
                 ],
               ),
-              // ---- 三秒环形倒计时（模块 C）：覆盖全屏，地图已预加载 ----
+              // ---- 三秒环形倒计时（模块 C；阶段 M-B 语音倒计时）----
+              // engine 受语音导航总开关控制：关闭或引擎不可用时纯视觉倒计时。
               if (_showCountdown)
                 CountdownOverlay(
                   onGo: _onCountdownGo,
                   onCancelled: _onCountdownCancel,
+                  engine: NavSettings.instance.voiceNavEnabled ? _tts : null,
                   onComplete: () {
                     if (mounted) setState(() => _showCountdown = false);
                   },
@@ -1013,6 +1078,84 @@ class _KmToast extends StatelessWidget {
             Text(
               '第 ${split.index} 公里 · 配速 ${formatPace(split.paceSecondsPerKm)}',
               style: const TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.w600),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// 目标完成卡片（阶段 M-C，任务书 4.3）：语音已提醒，屏幕常驻显示，
+/// 「继续跑步」收起卡片继续累计，「结束运动」走正常结束流程进总结页。
+/// 绝不自动结束、绝不要求语音应答。
+class _GoalCard extends StatelessWidget {
+  const _GoalCard({
+    required this.distanceMeters,
+    required this.onContinue,
+    required this.onEnd,
+  });
+
+  final double distanceMeters;
+  final VoidCallback onContinue;
+  final VoidCallback onEnd;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: const Color(0xF2103A20),
+      borderRadius: BorderRadius.circular(14),
+      elevation: 6,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: <Widget>[
+            Row(
+              children: <Widget>[
+                const Icon(Icons.emoji_events, color: Color(0xFFFFD54F), size: 26),
+                const SizedBox(width: 10),
+                const Text('目标已完成！',
+                    style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 17,
+                        fontWeight: FontWeight.w700)),
+                const Spacer(),
+                Text('已跑 ${formatKm(distanceMeters)} km',
+                    style: const TextStyle(
+                        color: Color(0xFFA5D6A7), fontSize: 13)),
+              ],
+            ),
+            const SizedBox(height: 4),
+            const Text('您可以选择继续跑步，或结束本次运动',
+                style: TextStyle(color: Colors.white70, fontSize: 12.5)),
+            const SizedBox(height: 12),
+            Row(
+              children: <Widget>[
+                Expanded(
+                  child: OutlinedButton(
+                    onPressed: onContinue,
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: Colors.white,
+                      side: const BorderSide(color: Colors.white54),
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                    ),
+                    child: const Text('继续跑步'),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: FilledButton(
+                    onPressed: onEnd,
+                    style: FilledButton.styleFrom(
+                      backgroundColor: const Color(0xFF66BB6A),
+                      foregroundColor: const Color(0xFF0B2A14),
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                    ),
+                    child: const Text('结束运动'),
+                  ),
+                ),
+              ],
             ),
           ],
         ),

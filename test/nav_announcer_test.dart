@@ -82,8 +82,8 @@ void main() {
       final FakeEngine engine = FakeEngine();
       final NavAnnouncer a = NavAnnouncer(engine: engine, config: TestConfig());
       a.attach(<RouteStep>[_step('straight', 100, road: '环城路'), _step('right', 500, road: '中山路')]);
-      expect(engine.last, contains('开始跑步'));
-      expect(engine.last, contains('环城路'));
+      // 阶段 M-B：「开始跑步」由倒计时播报，attach 只排队出发方向信息
+      expect(engine.last, '沿环城路前进');
     });
 
     test('提前 50m 播一次，窗口内不重复（防 GPS 抖动重播）', () {

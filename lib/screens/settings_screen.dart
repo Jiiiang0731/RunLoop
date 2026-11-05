@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../services/nav/nav_settings.dart';
 import '../services/nav/tts_service.dart';
+import 'voice_diagnostics_screen.dart';
 
 /// 语音导航设置页（阶段 L 模块 A，规范 2.5）。
 ///
@@ -187,6 +188,23 @@ class _SettingsScreenState extends State<SettingsScreen> {
               label: const Padding(
                 padding: EdgeInsets.symmetric(vertical: 10),
                 child: Text('试听语音'),
+              ),
+            ),
+            const SizedBox(height: 8),
+            // ---- 语音引擎诊断（阶段 M · Vivo 专项）----
+            Card(
+              child: ListTile(
+                leading: const Icon(Icons.medical_services_outlined),
+                title: const Text('语音引擎诊断'),
+                subtitle: const Text(
+                    '锁屏没声音 / 引擎缺中文 / Vivo 兼容问题：检测全部引擎、'
+                    '真实朗读验证、自动选择可用引擎、电池白名单与自启动引导'),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () => Navigator.push(
+                  context,
+                  MaterialPageRoute<void>(
+                      builder: (_) => const VoiceDiagnosticsScreen()),
+                ),
               ),
             ),
             const SizedBox(height: 24),

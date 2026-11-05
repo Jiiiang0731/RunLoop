@@ -12,6 +12,9 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION"/>
     <!-- 通知（Android 13+ 前台服务通知） -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+    <!-- 阶段 M：锁屏语音保障——弹系统「忽略电池优化」白名单确认框（用户主动触发，
+         仅影响本 App 后台存活，不收集数据；侧载分发不受 Play 政策限制） -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"/>
 
     <application
         android:label="环跑"

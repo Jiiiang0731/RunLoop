@@ -1,7 +1,39 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:runloop/services/nav/tts_service.dart';
 import 'package:runloop/widgets/countdown_overlay.dart';
+
+/// 记录播报的假引擎（阶段 M-B 语音倒计时测试）。
+class FakeSpeech implements SpeechEngine {
+  final List<String> spoken = <String>[];
+  final List<bool> flushes = <bool>[];
+  int stopCalls = 0;
+  bool failSpeak = false;
+
+  @override
+  Future<void> speak(String text, {required bool flush}) async {
+    if (failSpeak) throw Exception('engine down');
+    spoken.add(text);
+    flushes.add(flush);
+  }
+
+  @override
+  Future<void> stop() async => stopCalls++;
+
+  @override
+  Future<void> configure({required double rate, required double volume}) async {}
+
+  @override
+  Future<TtsDiagnostic> diagnose() async =>
+      const TtsDiagnostic(TtsAvailability.ok, '');
+
+  @override
+  bool get isSpeaking => false;
+
+  @override
+  void Function()? onIdle;
+}
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -90,5 +122,90 @@ void main() {
     await tester.pump();
     expect(cancel, 0);
     await tester.pumpAndSettle();
+  });
+
+  group('阶段 M-B 语音倒计时（任务书 3.1）', () {
+    testWidgets('依次播报 三/二/一/开始跑步，全部 flush（语音不重叠）',
+        (WidgetTester tester) async {
+      final FakeSpeech engine = FakeSpeech();
+      await tester.pumpWidget(wrapCountdown(CountdownOverlay(
+        onGo: () {},
+        onCancelled: () {},
+        onComplete: () {},
+        engine: engine,
+      )));
+      await tester.pump(); // 首帧 tick → 「三」
+      expect(engine.spoken, <String>['三']);
+
+      await tester.pump(const Duration(seconds: 1));
+      expect(engine.spoken, <String>['三', '二']);
+      await tester.pump(const Duration(seconds: 1));
+      expect(engine.spoken, <String>['三', '二', '一']);
+      await tester.pump(const Duration(seconds: 1));
+      expect(engine.spoken, <String>['三', '二', '一', '开始跑步']);
+      expect(engine.flushes.every((bool f) => f), isTrue,
+          reason: '每句都必须 flush，前一句立即被打断清空——绝不重叠');
+      await tester.pumpAndSettle();
+    });
+
+    testWidgets('「开始跑步」在 onGo 之前下发（出发播报 QUEUE_ADD 自然衔接）',
+        (WidgetTester tester) async {
+      final FakeSpeech engine = FakeSpeech();
+      int spokenLenAtGo = -1;
+      await tester.pumpWidget(wrapCountdown(CountdownOverlay(
+        onGo: () => spokenLenAtGo = engine.spoken.length,
+        onCancelled: () {},
+        onComplete: () {},
+        engine: engine,
+      )));
+      await tester.pump();
+      await tester.pump(const Duration(seconds: 1));
+      await tester.pump(const Duration(seconds: 1));
+      await tester.pump(const Duration(seconds: 1)); // GO 边界
+      expect(spokenLenAtGo, 4, reason: 'onGo 触发时「开始跑步」必须已入队');
+      expect(engine.spoken.last, '开始跑步');
+      await tester.pumpAndSettle();
+    });
+
+    testWidgets('取消：清空语音队列（stop），此后不再播报，绝不触发 onGo',
+        (WidgetTester tester) async {
+      final FakeSpeech engine = FakeSpeech();
+      int go = 0;
+      await tester.pumpWidget(wrapCountdown(CountdownOverlay(
+        onGo: () => go++,
+        onCancelled: () {},
+        onComplete: () {},
+        engine: engine,
+      )));
+      await tester.pump();
+      expect(engine.spoken, <String>['三']);
+      await tester.tap(find.text('取消'));
+      await tester.pump();
+      expect(engine.stopCalls, 1);
+      expect(go, 0);
+      await tester.pump(const Duration(seconds: 4));
+      expect(engine.spoken, <String>['三'], reason: '取消后剩余语音不再播报');
+      expect(go, 0);
+      await tester.pumpAndSettle();
+    });
+
+    testWidgets('引擎异常：倒计时照常完成（静默降级为无语音，任务书 3.1#6）',
+        (WidgetTester tester) async {
+      final FakeSpeech engine = FakeSpeech()..failSpeak = true;
+      int go = 0, complete = 0;
+      await tester.pumpWidget(wrapCountdown(CountdownOverlay(
+        onGo: () => go++,
+        onCancelled: () {},
+        onComplete: () => complete++,
+        engine: engine,
+      )));
+      await tester.pump();
+      await tester.pump(const Duration(seconds: 3));
+      expect(go, 1);
+      expect(find.text('GO!'), findsOneWidget);
+      await tester.pump(const Duration(milliseconds: 750));
+      expect(complete, 1);
+      await tester.pumpAndSettle();
+    });
   });
 }
