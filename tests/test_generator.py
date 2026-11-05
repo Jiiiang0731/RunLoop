@@ -6,7 +6,7 @@ import unittest
 
 from backend.route_generator import (
     CalibrateResult, GenerateOptions, MockPlanner, ScoreComponent, ScoreResult,
-    generate_candidates, rank_candidates,
+    adaptive_n_points, generate_candidates, rank_candidates,
 )
 from backend.route_generator import generator as gen_mod
 from backend.route_generator.types import Candidate, PlanResult
@@ -149,6 +149,24 @@ class TestGenerator(unittest.TestCase):
                                per_seed_calls=5, max_api_calls=600)
         res = generate_candidates(AlwaysFailPlanner(), self.center, opts)
         self.assertLessEqual(res.total_api_calls, 5)
+
+
+class TestAdaptiveNPoints(unittest.TestCase):
+    """P1：1km 用 6 点骨架（实测 1030m/18 次/4.4s），2.5km 仍用 8 点。"""
+
+    def test_short_uses_six(self):
+        self.assertEqual(adaptive_n_points(1000), 6)
+        self.assertEqual(adaptive_n_points(1500), 6)
+
+    def test_medium_keeps_eight(self):
+        self.assertEqual(adaptive_n_points(1501), 8)
+        self.assertEqual(adaptive_n_points(2500), 8)
+        self.assertEqual(adaptive_n_points(3000), 8)
+
+    def test_long_distances_unchanged(self):
+        self.assertEqual(adaptive_n_points(5000), 5)
+        self.assertEqual(adaptive_n_points(15000), 9)
+        self.assertEqual(adaptive_n_points(50000), 10)
 
 
 if __name__ == "__main__":

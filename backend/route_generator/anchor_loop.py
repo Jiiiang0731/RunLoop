@@ -101,7 +101,8 @@ def build_anchor_loop(planner: MapPlanner,
 
     def evaluate(loop: LoopRoute, drops: List[int]) -> Dict:
         steps = [s for seg in loop.segments for s in seg.steps]
-        m = analyze_route(steps, loop.polyline, target_m)
+        m = analyze_route(steps, loop.polyline, target_m,
+                          segments=loop.segments)
         score = score_route(target_m, loop, m)
         return {"drop": drops[0] if drops else -1,
                 "drops": list(drops),

@@ -33,6 +33,11 @@ def adaptive_n_points(target_m: int) -> int:
     长距离沿用阶段 J/K 标定：5km→5、10km→6、15km→9、20km→10。
     """
     km = target_m / 1000.0
+    # P1 实测（长江大学 1km，真实 API）：6 点骨架 1030m/42 次/15.9s，
+    # 8 点骨架 1076m/70 次/19.2s；6 点同时把转弯 12→9、接缝短折返 2→0。
+    # 1.5km 以内用 6 点；1.5~3km 仍用 8 点，避免破坏短中距离精度。
+    if target_m <= 1500:
+        return 6
     if km <= 3:
         return 8
     if km <= 7:
@@ -97,7 +102,8 @@ def _generate_anchor(planner: MapPlanner, start: GeoPoint,
     metrics = (cr.get("best") or {}).get("metrics")
     if metrics is None:
         steps = [s for seg in loop.segments for s in seg.steps]
-        metrics = analyze_route(steps, loop.polyline, options.target_m)
+        metrics = analyze_route(steps, loop.polyline, options.target_m,
+                                segments=loop.segments)
     score = score_route(options.target_m, loop, metrics)
     best = cr.get("best") or {}
     anchor = {
@@ -168,7 +174,8 @@ def generate_candidates(planner: MapPlanner, start: GeoPoint,
                 all_steps = []
                 for seg in cr.loop.segments:
                     all_steps.extend(seg.steps)
-                metrics = analyze_route(all_steps, cr.loop.polyline, options.target_m)
+                metrics = analyze_route(all_steps, cr.loop.polyline, options.target_m,
+                                        segments=cr.loop.segments)
             candidates.append(Candidate(
                 seed=seed, loop=cr.loop,
                 score=score_route(options.target_m, cr.loop, metrics),

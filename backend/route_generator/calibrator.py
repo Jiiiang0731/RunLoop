@@ -52,6 +52,23 @@ def tight_tolerance(tol_m: float, target_m: int) -> float:
     return min(float(tol_m), max(30.0, 0.05 * float(target_m)))
 
 
+def _ring_base_angle(v) -> Optional[float]:
+    """偏移中心变体：把第一个控制点放到起点所在的环边缘（P1）。
+
+    默认圆心=起点时，闭环实际是「起点→圆周→回到起点」的棒棒糖：两条径向
+    腿常常原路折返，产生无意义 20~50m 折返与多余掉头。center 偏移 R 且
+    第一个点正对起点时，起点就在环线上，闭环真正绕一圈。
+    矩形骨架参数从角点起算，不做该对齐。
+    """
+    if v.offset_factor > 0 and getattr(v, "shape", "ring") != "rect":
+        # generate_ring 的极角以正东为 0、逆时针；variant_center 的
+        # offset_dir_deg 以正北为 0、顺时针。中心在起点 dir 方向、半径 R，
+        # 起点相对中心的罗盘方向是 dir+180，对应数学极角 270-dir；
+        # 再减去骨架整体旋转 angle_deg。
+        return (270.0 - v.offset_dir_deg - v.angle_deg) % 360.0
+    return None
+
+
 def variant_center(start, v, radius_m: float):
     """骨架中心：起点，或按变体的偏移方位/倍率外移（阶段 N）。
 
@@ -74,7 +91,8 @@ def _loop_metrics(loop: LoopRoute, target_m: int) -> dict:
     all_steps = []
     for seg in loop.segments:
         all_steps.extend(seg.steps)
-    return analyze_route(all_steps, loop.polyline, target_m)
+    return analyze_route(all_steps, loop.polyline, target_m,
+                         segments=loop.segments)
 
 
 def _is_better(err: float, score: Optional[float], best_err: Optional[float],
@@ -163,7 +181,8 @@ def calibrate(planner: MapPlanner, start: GeoPoint, target_m: int, n_points: int
                 break
             wps = generate_ring(variant_center(start, v, R), R, v.n_points, seed,
                                 jitter=v.jitter, aspect=v.aspect,
-                                angle_deg=v.angle_deg, shape=v.shape)
+                                angle_deg=v.angle_deg, shape=v.shape,
+                                base_angle_deg=_ring_base_angle(v))
             loop, c = build_loop(planner, start, wps, sleep=sleep)
             calls += c
             if loop.error:
@@ -192,8 +211,10 @@ def calibrate(planner: MapPlanner, start: GeoPoint, target_m: int, n_points: int
                 # 大量台阶/地下通道/天桥：不参与最优选择，只在没有更好候选时兜底
                 history.append({"variant": v.label, "iter": it,
                                 "event": "walk_bad_reject", "walk_bad": bad_share})
+            # 选择顺序：距离先进入内部目标带（5%·目标，1km≈50m），
+            # 再在带内比质量。避免为了少一个接缝折返而牺牲 100m+ 精度。
             if (not too_bad or best is None) and \
-                    _is_better(e, score, best_err, best_score, tol_m):
+                    _is_better(e, score, best_err, best_score, tight):
                 best, best_err, best_score, best_metrics = loop, e, score, metrics
                 best_variant, best_R = v, R
             if not too_bad and _should_stop_early(e, score, metrics, tight):
@@ -234,7 +255,12 @@ def calibrate(planner: MapPlanner, start: GeoPoint, target_m: int, n_points: int
     #      割线序列 15km: err −3132→+5533→−955→(预测≈达标)，第 3 次收敛；
     #   3) 重校全部失败 → 容差感知模式重跑（plan 命中缓存近零成本），
     #      只采用「修复后仍达标」的小绕行，否则回退原路线（硬约束赢）。
-    if (fix_detours and best is not None and best_err is not None
+    # 1.5km 以内不做激进绕行替换：实测会把 1km 路线从 1076m 修到
+    # 742m（-258m）却仍在 ±500m 内被接受，直接破坏用户要求的 0.99km 精度。
+    # 1.5km 以上保留 spur_fix，但 partial accept 已加 tight 距离守卫。
+    # 折返治理优先由 join 指标参与评分/选路，不再事后切割真实折线。
+    if (fix_detours and target_m > 1500
+            and best is not None and best_err is not None
             and abs(best_err) <= tol_m
             and (max_calls is None or calls < max_calls)):
         pre_dist = best.distance_m
@@ -273,7 +299,8 @@ def calibrate(planner: MapPlanner, start: GeoPoint, target_m: int, n_points: int
                             jitter=best_variant.jitter,
                             aspect=best_variant.aspect,
                             angle_deg=best_variant.angle_deg,
-                            shape=best_variant.shape)
+                            shape=best_variant.shape,
+                            base_angle_deg=_ring_base_angle(best_variant))
                         loop2, c2 = build_loop(planner, start, wps, sleep=sleep)
                         calls += c2
                         if loop2.error:
@@ -321,8 +348,11 @@ def calibrate(planner: MapPlanner, start: GeoPoint, target_m: int, n_points: int
                     if sres_c.fixes:
                         metrics_c = _loop_metrics(sres_c.loop, target_m)
                         score_c = score_route(target_m, sres_c.loop, metrics_c).total
-                        if score_c >= (best_score or 0.0) - 5.0:
-                            e_c = sres_c.loop.distance_m - target_m
+                        e_c = sres_c.loop.distance_m - target_m
+                        # P1：部分采用也绝不能把距离拖出内部目标带。
+                        # 实测 1km 目标曾被“修折返”修到 742m（-258m）仍被
+                        # 接受——用户明确要求 1km≈0.99km，精度优先于折返。
+                        if abs(e_c) <= tight and score_c >= (best_score or 0.0) - 5.0:
                             history.append({"event": "spur_partial_accept",
                                             "n_fixes": len(sres_c.fixes),
                                             "err": round(e_c, 1), "score": score_c})
@@ -330,8 +360,10 @@ def calibrate(planner: MapPlanner, start: GeoPoint, target_m: int, n_points: int
                             best_score, best_metrics = score_c, metrics_c
                         else:
                             history.append({"event": "spur_revert",
-                                            "reason": "partial_score",
-                                            "err_after_fix": round(e, 1)})
+                                            "reason": "partial_distance" if abs(e_c) > tight
+                                                else "partial_score",
+                                            "err_after_fix": round(e_c, 1),
+                                            "tight_m": round(tight, 1)})
                     else:
                         history.append({"event": "spur_revert",
                                         "err_after_fix": round(e, 1)})

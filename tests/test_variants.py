@@ -85,10 +85,9 @@ class TestShortDistanceGrid(unittest.TestCase):
         for v in vs:
             self.assertEqual(v.max_iters, 1, "网格变体只建一次，不做 R 迭代")
             self.assertGreaterEqual(v.n_points, 8, "街区尺度需要足够控制点")
-        # 形状覆盖矩形与圆（城市街区更接近矩形）
+        # P1：短距离只用矩形骨架（实测圆心=起点的圆/矩形会生成棒棒糖折返）
         shapes = {v.shape for v in vs}
-        self.assertIn("rect", shapes)
-        self.assertIn("ring", shapes)
+        self.assertEqual(shapes, {"rect"})
         # 偏移中心变体：覆盖「起点在环线一角」的自然环线（阶段 N 关键修复）
         offsets = [v for v in vs if v.offset_factor > 0 and v.offset_dir_deg >= 0]
         self.assertGreaterEqual(len(offsets), 2, "需要多个偏移方位的候选")

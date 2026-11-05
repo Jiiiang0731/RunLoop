@@ -49,14 +49,19 @@ from backend.route_generator import (  # noqa: E402
     compute_drivable_access,
     generate_candidates,
 )
+from backend.route_generator.geo import simplify_rdp  # noqa: E402
 from backend.route_generator.nav_text import build_nav_instructions  # noqa: E402
 from backend.route_generator.overlap import detect_overlaps  # noqa: E402
 from backend.route_generator.sampling import sample_points_by_distance  # noqa: E402
+from backend.route_generator.turn_events import (  # noqa: E402
+    build_turn_events, events_to_steps,
+)
 
 KEY_FILE = os.path.join(ROOT, "config", "amap_key.local")
-SERVICE_VERSION = "0.6"
+SERVICE_VERSION = "0.7"
 # 健康检查里显式声明能力，便于确认「进程是不是新代码」而不是只看版本号。
-SERVICE_FEATURES = {"anchor_loop": True, "verify_drivable": True}
+SERVICE_FEATURES = {"anchor_loop": True, "verify_drivable": True,
+                    "turn_events": True, "geometry_preserving": True}
 MAX_BODY_BYTES = 256 * 1024
 MAX_API_CALLS_CLAMP = 1500      # 决策#2：质量优先，预算上限放宽（原 1200）
 DEFAULT_MAX_API_CALLS = 800
@@ -202,20 +207,19 @@ def create_app() -> Flask:
     # ---- 序列化（客户端契约不变，字段只增不改） ----
 
     def _downsample(points, step=2):
-        """折线降采样，减少 JSON 体积（保留首尾）。"""
-        if len(points) <= step:
-            return points
-        out = points[::step]
-        if out[-1] != points[-1]:
-            out.append(points[-1])
-        return out
+        """保形简化（P0）：不再隔点抽稀。
+
+        隔点抽稀会裁掉拐角并把 1081m 折线压成 991m，导致地图与语音方向/
+        里程不一致。RDP 只删除偏离 <1.5m 的冗余点，保留真实拐角。
+        """
+        return simplify_rdp(points, 1.5)
 
     def _serialize_steps(segments):
         """把分段 steps 转成自然语言导航（含累计里程与转向）。"""
         all_steps = []
         for seg in segments:
             all_steps.extend(seg.steps)
-        nav = build_nav_instructions(all_steps)
+        nav = build_nav_instructions(all_steps, segments=segments)
         out = []
         for item in nav:
             out.append({
@@ -251,6 +255,7 @@ def create_app() -> Flask:
                     "detail": comp.detail,
                 })
         poly = _downsample(loop.polyline, 2)
+        turn_events = build_turn_events(loop.segments, poly)
         return {
             "seed": c.seed,
             "ok": True,
@@ -273,6 +278,8 @@ def create_app() -> Flask:
             "anchor": getattr(c, "anchor", None),
             "polyline": [[round(p[0], 6), round(p[1], 6)] for p in poly],
             "overlaps": detect_overlaps(poly),
+            # P0：唯一转弯事实来源。地图图标/顶部提示/TTS 必须只消费它。
+            "turns": events_to_steps(turn_events, poly),
             "steps": _serialize_steps(loop.segments),
         }
 

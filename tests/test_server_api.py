@@ -52,7 +52,7 @@ class TestHealth(ServerApiBase):
         j = r.get_json()
         self.assertEqual(j["status"], "ok")
         self.assertEqual(j["service"], "runloop-route-api")
-        self.assertEqual(j["version"], "0.6")
+        self.assertEqual(j["version"], "0.7")
         self.assertEqual(j["env"], "production")   # RUNLOOP_ENV 未设 → 生产
         self.assertEqual(j["breaker"], "closed")
         self.assertIn("uptime_s", j)
@@ -60,6 +60,8 @@ class TestHealth(ServerApiBase):
         self.assertIn("started_at", j)
         self.assertTrue(j["features"]["anchor_loop"])
         self.assertTrue(j["features"]["verify_drivable"])
+        self.assertTrue(j["features"]["turn_events"])
+        self.assertTrue(j["features"]["geometry_preserving"])
         # health 不经过限流/熔断（before_request 直通）
         self.assertNotIn("TEST-SECRET", r.get_data(as_text=True))
 
@@ -74,7 +76,7 @@ class TestHealth(ServerApiBase):
         j = r.get_json()
         self.assertTrue(j["success"])
         cfg = j["config"]
-        self.assertEqual(cfg["service_version"], "0.6")
+        self.assertEqual(cfg["service_version"], "0.7")
         self.assertEqual(cfg["announcement"], "")
         self.assertEqual(cfg["generate"]["max_api_calls"], 800)
         self.assertEqual(cfg["pois"]["radius"], 500)
@@ -281,8 +283,8 @@ class TestGenerateFlow(ServerApiBase):
         self.assertEqual(c["error_m"], 2.0)
         self.assertTrue(c["within_tolerance"])
         self.assertTrue(c["closure_ok"])
-        # 折线降采样 ×2（保留首尾）：4 点 → [p0, p2, p3]
-        self.assertEqual(len(c["polyline"]), 3)
+        # P0：保形简化保留所有真实拐点（4 点全部偏离 >1.5m，不抽稀）
+        self.assertEqual(len(c["polyline"]), 4)
         self.assertEqual(c["polyline"][0], [114.0, 30.5])
         self.assertEqual(c["polyline"][-1], [114.0, 30.5])
         self.assertEqual(self.state.breaker.state, "closed", "成功候选应复位熔断器")

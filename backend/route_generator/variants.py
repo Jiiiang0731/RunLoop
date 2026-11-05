@@ -64,16 +64,15 @@ def plan_variants(target_m: int, n_points: int, seed: int,
       保持 15km/50km 已验证的质量。
     """
     if target_m <= SHORT_DISTANCE_M:
-        n = max(n_points, 8)
+        n = max(n_points, 6)
         a = float((seed * 37) % 90)
+        # P1：6 点（1.5km 内）在真实 API 上距离更准、转弯更少、调用更少。
+        # grid_off_se_big 历史最优，放第一位：一旦距离进入 5% 内部带，
+        # 再试一个兜底变体即可早停（实测 1km 从 70 次降到约 14 次）。
         return [
-            # 中等矩形：城市街区/校园外围最常见的自然形态（周长与圆等长）
-            SkeletonVariant(n, 1.0, a, 0.0, 1, "grid_rect", shape="rect"),
-            SkeletonVariant(n, 1.0, a, 0.05, 1, "grid_ring"),
-            # 偏移中心：覆盖「起点在环线一角」的自然环线（校园/公园/街区外围）
-            SkeletonVariant(n, 1.0, 135.0, 0.05, 1, "grid_off_se",
+            SkeletonVariant(n, 1.0, 135.0, 0.05, 1, "grid_off_se_big",
                             shape="rect", offset_dir_deg=135.0,
-                            offset_factor=0.9),
+                            offset_factor=1.25),
             SkeletonVariant(n, 1.0, 45.0, 0.05, 1, "grid_off_ne",
                             shape="rect", offset_dir_deg=45.0,
                             offset_factor=0.9),
@@ -83,11 +82,11 @@ def plan_variants(target_m: int, n_points: int, seed: int,
             SkeletonVariant(n, 1.0, 315.0, 0.05, 1, "grid_off_nw",
                             shape="rect", offset_dir_deg=315.0,
                             offset_factor=0.9),
+            SkeletonVariant(n, 1.0, 135.0, 0.05, 1, "grid_off_se",
+                            shape="rect", offset_dir_deg=135.0,
+                            offset_factor=0.9),
             SkeletonVariant(n, 1.0, a + 30, 0.04, 1, "grid_rect_big",
                             shape="rect", radius_factor=1.25),
-            SkeletonVariant(n, 1.0, 135.0, 0.05, 1, "grid_off_se_big",
-                            shape="rect", offset_dir_deg=135.0,
-                            offset_factor=1.25),
         ]
     lean_n = lean_n_points(n_points)
     base = SkeletonVariant(n_points=n_points, aspect=1.0, angle_deg=0.0,

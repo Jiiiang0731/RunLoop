@@ -10,7 +10,8 @@ from .geo import GeoPoint
 
 def generate_ring(center: GeoPoint, radius_m: float, n: int, seed: int,
                   jitter: float = 0.15, aspect: float = 1.0,
-                  angle_deg: float = 0.0, shape: str = "ring") -> List[GeoPoint]:
+                  angle_deg: float = 0.0, shape: str = "ring",
+                  base_angle_deg: float = None) -> List[GeoPoint]:
     """
     生成 n 个控制点，按 shape 分布在半径 radius_m 的骨架曲线上。
 
@@ -20,13 +21,17 @@ def generate_ring(center: GeoPoint, radius_m: float, n: int, seed: int,
     - aspect: 椭圆/矩形轴比（1.0 = 方形；>1 南北拉长，<1 东西拉长）。
     - angle_deg: 整体旋转角度。
     - jitter: 半径随机抖动比例（rect 不抖动，保持角点贴合道路转角）。
+    - base_angle_deg: 强制第一个控制点的极角（度）。阶段 P1：把起点放在
+      环线上（center 偏移 R、base=offset_dir+180），消除「圆心=起点」造成的
+      径向折返棒棒糖尾巴。
     - 相同 seed + 参数 => 完全相同的点（可复现）。
     """
     rng = random.Random(seed)
     lng, lat = center
     mlat = 110574.0
     mlng = 111320.0 * math.cos(math.radians(lat))
-    base = rng.uniform(0, 2 * math.pi)
+    base = (math.radians(base_angle_deg) if base_angle_deg is not None
+            else rng.uniform(0, 2 * math.pi))
     rot = math.radians(angle_deg)
     pts: List[GeoPoint] = []
     if shape == "rect":

@@ -84,11 +84,16 @@ def long_straight_score(metrics: Dict) -> float:
 
 
 def sharp_short_score(metrics: Dict) -> float:
-    """急弯、短距离连续转弯、掉头越少越高。"""
+    """急弯、短距离连续转弯、掉头越少越高。
+
+    P1：分段接缝处的短折返（跑出去十几米又原路折回）额外重罚——它既浪费
+    距离，又会让语音连续报「掉头」，是真实测试中最刺眼的体验问题。
+    """
     sharp = int(metrics.get("sharp_turns", 0))
     short = int(metrics.get("short_consecutive", 0))
     uturn = int(metrics.get("uturns", 0))
-    penalty = sharp * 8 + short * 12 + uturn * 10
+    join_short = int(metrics.get("join_short_uturns", 0))
+    penalty = sharp * 8 + short * 12 + uturn * 10 + join_short * 25
     return round(max(0.0, 100.0 - penalty), 1)
 
 
@@ -152,7 +157,8 @@ def score_route(target_m: int, loop: LoopRoute,
         f"重复路段 {float(m.get('repetition_ratio', 0)):.1%}"))
     components.append(ScoreComponent(
         "sharp_short", sharp_short_score(m), w.get("sharp_short", 0), True,
-        f"急弯 {int(m.get('sharp_turns', 0))}，短连弯 {int(m.get('short_consecutive', 0))}"))
+        f"急弯 {int(m.get('sharp_turns', 0))}，短连弯 {int(m.get('short_consecutive', 0))}，"
+        f"接缝短折返 {int(m.get('join_short_uturns', 0))}"))
     components.append(ScoreComponent(
         "distance_fit", distance_error_score(err, target_m), w.get("distance_fit", 0), True,
         f"误差 {err:+.0f}m（目标 {target_m}m）"))

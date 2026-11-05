@@ -43,6 +43,52 @@ def parse_polyline(s: str) -> List[GeoPoint]:
     return pts
 
 
+def _perp_distance_m(p: GeoPoint, a: GeoPoint, b: GeoPoint) -> float:
+    """点 p 到线段 ab 的垂距（米，局部平面近似）。"""
+    cos_lat = math.cos(math.radians(p[1]))
+    ax, ay = a[0] * cos_lat, a[1]
+    bx, by = b[0] * cos_lat, b[1]
+    px, py = p[0] * cos_lat, p[1]
+    dx, dy = bx - ax, by - ay
+    len2 = dx * dx + dy * dy
+    if len2 <= 0:
+        return haversine(p, a)
+    t = max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / len2))
+    qx, qy = ax + dx * t, ay + dy * t
+    return haversine((qx / cos_lat, qy), p)
+
+
+def simplify_rdp(points: List[GeoPoint], tolerance_m: float = 1.5) -> List[GeoPoint]:
+    """保形折线简化（Ramer–Douglas–Peucker）。
+
+    P0 证据：旧 `_downsample(points, 2)` 隔点抽稀会把 1081m 的 1km 折线压成
+    991m（-8%），裁掉拐角，导致地图几何与高德步骤里程错位、左右转视觉与
+    语音不一致。RDP 只删除偏离折线 < tolerance 的冗余点，保留所有真实拐角。
+    """
+    if len(points) <= 2 or tolerance_m <= 0:
+        return list(points)
+    keep = [False] * len(points)
+    keep[0] = keep[-1] = True
+    stack = [(0, len(points) - 1)]
+    while stack:
+        i, j = stack.pop()
+        if j <= i + 1:
+            continue
+        max_d = -1.0
+        max_k = i
+        for k in range(i + 1, j):
+            d = _perp_distance_m(points[k], points[i], points[j])
+            if d > max_d:
+                max_d = d
+                max_k = k
+        if max_d > tolerance_m:
+            keep[max_k] = True
+            stack.append((i, max_k))
+            stack.append((max_k, j))
+    out = [points[i] for i in range(len(points)) if keep[i]]
+    return out if len(out) >= 2 else [points[0], points[-1]]
+
+
 def _out_of_china(lng: float, lat: float) -> bool:
     return not (72.004 <= lng <= 137.8347 and 0.8293 <= lat <= 55.8271)
 

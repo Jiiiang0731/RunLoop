@@ -3,8 +3,10 @@
 """路线质量指标（有效转弯/直行路段）单元测试。"""
 import unittest
 
-from backend.route_generator.nav_metrics import analyze_route, detect_turns
-from backend.route_generator.types import PlanStep
+from backend.route_generator.nav_metrics import (
+    analyze_route, detect_turns, join_turn_metrics,
+)
+from backend.route_generator.types import PlanStep, RouteSegment
 
 
 def _line(p0, p1, n=2):
@@ -57,6 +59,26 @@ class TestNavMetrics(unittest.TestCase):
         ]
         m = analyze_route(steps, a + b[1:] + c[1:], 100)
         self.assertGreaterEqual(m["short_consecutive"], 1)
+
+    def test_join_uturn_detects_short_backtrack(self):
+        """P1：分段接缝原路折返（高德 steps 无 action）也必须被识别。"""
+        east = _line((121.0, 31.0), (121.001, 31.0))
+        west = _line((121.001, 31.0), (121.0006, 31.0))  # 约 44m 原路返回
+        segs = [
+            RouteSegment(index=0, origin=east[0], destination=east[-1],
+                         distance_m=111, duration_s=80, n_points=2,
+                         steps=[PlanStep(polyline=east)]),
+            RouteSegment(index=1, origin=west[0], destination=west[-1],
+                         distance_m=44, duration_s=32, n_points=2,
+                         steps=[PlanStep(polyline=west)]),
+        ]
+        j = join_turn_metrics(segs)
+        self.assertEqual(j["join_uturns"], 1)
+        self.assertEqual(j["join_short_uturns"], 1)
+        full = east + west[1:]
+        m = analyze_route([], full, 500, segments=segs)
+        self.assertEqual(m["join_uturns"], 1)
+        self.assertGreaterEqual(m["turns"], 1)
 
     def test_walk_bad_ratio_from_walk_type(self):
         """阶段 N：真实 walk_type 统计——地下通道/天桥等不适合跑步的路段占比。"""

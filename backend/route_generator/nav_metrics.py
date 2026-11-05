@@ -135,16 +135,63 @@ def _straight_runs(turns: List[Dict], total_m: float) -> List[float]:
     return runs
 
 
+def join_turn_metrics(segments) -> Dict:
+    """分段拼接接缝处的转向（P1：识别无意义折返的根源）。
+
+    闭环由多段独立高德规划拼接；接缝处若方向反转（U 型），说明骨架/控制点
+    让路线「走出去又原路折回」。这些折返不是高德 steps 里的 action，旧指标
+    完全看不到，却真实浪费距离、增加眩晕感和多余语音。
+    """
+    joins = 0
+    uturns = 0
+    sharp = 0
+    short_uturns = 0
+    short_uturn_m = 0.0
+    for i in range(len(segments) - 1):
+        a, b = segments[i], segments[i + 1]
+        if not a.steps or not b.steps:
+            continue
+        last, first = a.steps[-1], b.steps[0]
+        if len(last.polyline) < 2 or len(first.polyline) < 2:
+            continue
+        exit_b = bearing(last.polyline[-2], last.polyline[-1])
+        enter_b = bearing(first.polyline[0], first.polyline[1])
+        d = abs((enter_b - exit_b + 540) % 360 - 180)
+        joins += 1
+        if d >= 150:
+            uturns += 1
+            # 折返腿越短越无意义（跑出去十几米又折回来）
+            if min(a.distance_m, b.distance_m) < 80:
+                short_uturns += 1
+                short_uturn_m += min(a.distance_m, b.distance_m)
+        elif d >= 60:
+            sharp += 1
+    return {
+        "joins": joins,
+        "join_uturns": uturns,
+        "join_sharp": sharp,
+        "join_short_uturns": short_uturns,
+        "join_short_uturn_m": round(short_uturn_m, 1),
+    }
+
+
 def analyze_route(steps: List[PlanStep], polyline: List[GeoPoint],
-                  target_m: int) -> Dict:
+                  target_m: int, segments=None) -> Dict:
     """计算路线的跑步友好指标（真实数据推导）。"""
     total_m = _polyline_length(polyline) if polyline else sum(
         _polyline_length(s.polyline) for s in steps if s.polyline)
     turns = detect_turns(steps)
-    n_turns = len(turns)
+    join = join_turn_metrics(segments) if segments is not None else {
+        "joins": 0, "join_uturns": 0, "join_sharp": 0,
+        "join_short_uturns": 0, "join_short_uturn_m": 0.0,
+    }
+    # P1：接缝折返也是跑者真实经历的转向，计入有效转弯/急弯/掉头。
+    n_turns = len(turns) + join["join_uturns"] + join["join_sharp"]
     km = max(total_m / 1000.0, 0.001)
-    sharp = [t for t in turns if t["angle"] >= _SHARP_TURN_DEG]
-    uturns = [t for t in turns if t["angle"] >= 150.0]
+    sharp = [t for t in turns if t["angle"] >= _SHARP_TURN_DEG] + \
+        [None] * join["join_sharp"]
+    uturns = [t for t in turns if t["angle"] >= 150.0] + \
+        [None] * join["join_uturns"]
     # 短距离连续转弯：相邻两次有效转弯间隔 < 阈值
     short_pairs = 0
     for i in range(1, len(turns)):
@@ -167,6 +214,12 @@ def analyze_route(steps: List[PlanStep], polyline: List[GeoPoint],
         "total_m": round(total_m, 1),
         "turns": n_turns,
         "turn_density": round(n_turns / km, 2),
+        # P1：分段接缝折返（旧指标盲区）
+        "join_joins": join["joins"],
+        "join_uturns": join["join_uturns"],
+        "join_sharp": join["join_sharp"],
+        "join_short_uturns": join["join_short_uturns"],
+        "join_short_uturn_m": join["join_short_uturn_m"],
         "sharp_turns": len(sharp),
         "uturns": len(uturns),
         "short_consecutive": short_pairs,
