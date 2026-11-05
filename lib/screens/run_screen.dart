@@ -113,6 +113,29 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
   bool _hasFix = false; // 已成功匹配过一次
   double _alongForDraw = 0; // 驱动完成/剩余折线拆分
 
+  // ---- 阶段 M-G 性能层：增量缓存 + 节流更新 ----
+  // 原则：记录数据绝不丢失（recorder 保存全量点、精度、分段）；这里只
+  // 削减 UI 重建时的重复 O(N) 拷贝与地图插件的重复原生序列化。
+
+  /// 轨迹 LatLng 增量缓存：只追加；recorder 重启清空时整体重置。
+  final List<LatLng> _trackLatLngs = <LatLng>[];
+  int _trackPtsSeen = 0;
+
+  /// 轨迹折线节流（2s）：缓存的 Polyline 对象原样复用，插件深比较相等
+  /// 即跳过原生更新——长跑 7000+ 点时轨迹折线是最大的每帧序列化开销。
+  DateTime? _trackPolyAt;
+  Set<Polyline> _trackLineCache = <Polyline>{};
+  static const Duration _trackPolyInterval = Duration(seconds: 2);
+
+  /// completed/remaining 切片缓存：along 前进 ≥5m 或路线代数变化才重切
+  ///（5m 在缩放 18.5 下约 7px，且分界点就在跑者箭头正下方，不可感知）。
+  double _slicedAlong = -1;
+  int _slicedGen = -1;
+  int _routeGen = 0;
+  Set<Polyline> _routeLineCache = <Polyline>{};
+  Set<Polyline> _connectorLineCache = <Polyline>{};
+  Polyline? _canonicalRefLine;
+
   // ---- 动态重规划（阶段 M-D/E，任务书 5.1–5.8） ----
   /// 当前导航基准路径：初始 = 规划路线；重规划成功后原子切换为
   /// 「连接段 + 原剩余」合并路线。原规划折线 [_plannedPts] 永不修改
@@ -740,6 +763,12 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
       _lastAlong = null; // 新路径首帧全局投影重锚定
       _alongForDraw = 0;
       _hasFix = false; // 「active 已跑段」重新起算；GPS 轨迹独立不受影响
+      // M-G：路线代数 +1 → 切片/连接段/canonical 缓存全部失效重建
+      _routeGen++;
+      _slicedGen = -1;
+      _routeLineCache = <Polyline>{};
+      _connectorLineCache = <Polyline>{};
+      _canonicalRefLine = null;
       if (plan.withinTolerance) {
         _rerouteWarning = null;
       } else {
@@ -792,100 +821,154 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
   /// 展示层合成。偏航时橙色轨迹离开蓝色剩余线，真实偏离清晰可见，绝不被
   /// 遮盖。阶段 M-D：基准线 = _activePath（重规划后为合并路线），连接段
   /// 以琥珀色单独绘制（6.3：rerouteSegment 与原路线明显区分）。
+  /// M-G：轨迹 LatLng 增量同步——只换算 recorder 新增的点。
+  /// 旧实现每次重建都 `pts.map(...).toList()` 全表重映射（O(N) 拷贝，
+  /// 长跑 2 小时 ≈7200 点 ×每秒 1–2 次重建）；现在均摊 O(新增)。
+  List<LatLng> _syncTrackLatLngs(List<TrackPoint> pts) {
+    if (pts.length < _trackPtsSeen) {
+      // recorder.start() 清空重开：缓存整体重置（新一次运动）
+      _trackLatLngs.clear();
+      _trackPtsSeen = 0;
+      _trackPolyAt = null;
+      _trackLineCache = <Polyline>{};
+    }
+    for (int i = _trackPtsSeen; i < pts.length; i++) {
+      final TrackPoint p = pts[i];
+      _trackLatLngs.add(LatLng(p.latitude, p.longitude));
+    }
+    _trackPtsSeen = pts.length;
+    return _trackLatLngs;
+  }
+
   Set<Polyline> _buildPolylines(List<LatLng> trackPts) {
     final Set<Polyline> lines = <Polyline>{};
     // ---- 6.3 canonicalRoute 参考层：重规划后原规划路线保留为最淡参考线。
-    // 已跑部分由 GPS 轨迹诚实呈现、绝不被覆盖；仅当导航基准已切换
-    //（_connectorPts != null）时绘制，正常跑步时不出现多余图层。
+    // 已跑部分由 GPS 轨迹诚实呈现、绝不被覆盖；对象缓存——每个路线代数
+    // 只构建一次（M-G）。
     if (_connectorPts != null && _plannedPts.length >= 2) {
-      lines.add(Polyline(
+      _canonicalRefLine ??= Polyline(
         points: _plannedPts,
         color: RouteStyle.canonicalRefColor,
         width: RouteStyle.canonicalRefWidth,
         capType: CapType.round,
         joinType: JoinType.round,
         zIndex: RouteStyle.zCanonicalRef,
-      )..setIdForCopy('canonical-ref'));
+      )..setIdForCopy('canonical-ref');
+      lines.add(_canonicalRefLine!);
     }
+    // ---- 规划线三层（已完成/描边/主线）：切片缓存，along 前进 ≥5m
+    // 或路线代数变化才重切；其余时间复用同一组 Polyline 对象（M-G）。
     final RoutePath? path = _activePath;
     if (path != null && _activePts.length >= 2) {
-      List<LatLng> remaining = _activePts;
-      List<LatLng>? completed;
-      if (_hasFix && _started) {
-        final double along = _alongForDraw.clamp(0.0, path.total);
-        completed = path.upTo(along);
-        remaining = path.fromDistance(along);
+      final double along =
+          (_hasFix && _started) ? _alongForDraw.clamp(0.0, path.total) : -1;
+      final bool needSlice = _slicedGen != _routeGen ||
+          (along < 0) != (_slicedAlong < 0) ||
+          (along >= 0 && (along - _slicedAlong).abs() >= 5.0);
+      if (needSlice) {
+        List<LatLng> remaining = _activePts;
+        List<LatLng>? completed;
+        if (along >= 0) {
+          completed = path.upTo(along);
+          remaining = path.fromDistance(along);
+        }
+        _routeLineCache = _buildRouteLines(completed, remaining);
+        _slicedAlong = along;
+        _slicedGen = _routeGen;
       }
-      if (completed != null && completed.length >= 2) {
-        lines.add(Polyline(
-          points: completed,
-          color: RouteStyle.completedColor,
-          width: RouteStyle.completedWidth,
-          capType: CapType.round,
-          joinType: JoinType.round,
-          zIndex: RouteStyle.zCompleted,
-        )..setIdForCopy('planned-done'));
-      }
-      if (remaining.length >= 2) {
-        lines.add(Polyline(
-          points: remaining,
-          color: RouteStyle.casingColor,
-          width: RouteStyle.casingWidth,
-          capType: CapType.round,
-          joinType: JoinType.round,
-          zIndex: RouteStyle.zCasing,
-        )..setIdForCopy('planned-casing'));
-        lines.add(Polyline(
-          points: remaining,
-          gradient: true,
-          colorList: RouteStyle.plannedGradient,
-          color: RouteStyle.plannedGradient.first,
-          width: RouteStyle.coreWidth,
-          capType: CapType.round,
-          joinType: JoinType.round,
-          zIndex: RouteStyle.zCore,
-        )..setIdForCopy('planned-core'));
-      }
+      lines.addAll(_routeLineCache);
     }
-    // ---- 重规划连接段（琥珀色，真实步行道路，5.6 connector 折线） ----
+    // ---- 重规划连接段（琥珀色，真实步行道路，5.6 connector 折线）----
     final List<LatLng>? connector = _connectorPts;
     if (connector != null && connector.length >= 2) {
-      lines.add(Polyline(
-        points: connector,
-        color: RouteStyle.casingColor,
-        width: RouteStyle.rerouteCasingWidth,
-        capType: CapType.round,
-        joinType: JoinType.round,
-        zIndex: RouteStyle.zRerouteCasing,
-      )..setIdForCopy('reroute-casing'));
-      lines.add(Polyline(
-        points: connector,
-        color: RouteStyle.rerouteColor,
-        width: RouteStyle.rerouteCoreWidth,
-        capType: CapType.round,
-        joinType: JoinType.round,
-        zIndex: RouteStyle.zReroute,
-      )..setIdForCopy('reroute-core'));
+      if (_connectorLineCache.isEmpty) {
+        _connectorLineCache = <Polyline>{
+          Polyline(
+            points: connector,
+            color: RouteStyle.casingColor,
+            width: RouteStyle.rerouteCasingWidth,
+            capType: CapType.round,
+            joinType: JoinType.round,
+            zIndex: RouteStyle.zRerouteCasing,
+          )..setIdForCopy('reroute-casing'),
+          Polyline(
+            points: connector,
+            color: RouteStyle.rerouteColor,
+            width: RouteStyle.rerouteCoreWidth,
+            capType: CapType.round,
+            joinType: JoinType.round,
+            zIndex: RouteStyle.zReroute,
+          )..setIdForCopy('reroute-core'),
+        };
+      }
+      lines.addAll(_connectorLineCache);
     }
-    if (trackPts.length >= 2) {
-      lines.add(Polyline(
-        points: trackPts,
-        color: RouteStyle.trackCasingColor,
-        width: RouteStyle.trackCasingWidth,
-        capType: CapType.round,
-        joinType: JoinType.round,
-        zIndex: RouteStyle.zTrackCasing,
-      )..setIdForCopy('track-casing'));
-      lines.add(Polyline(
-        points: trackPts,
-        color: RouteStyle.trackColor,
-        width: RouteStyle.trackCoreWidth,
-        capType: CapType.round,
-        joinType: JoinType.round,
-        zIndex: RouteStyle.zTrack,
-      )..setIdForCopy('track-core'));
+    // ---- GPS 真实轨迹：原生更新按 2s 节流（M-G）。
+    // recorder 记录完全不受影响——只是显示层刷新频率从每帧降到 0.5Hz，
+    // 轨迹线追平延迟 ≤2s，跑者位置本身由 20Hz 相机与箭头实时表达。
+    final DateTime now = DateTime.now();
+    final bool stale = _trackPolyAt == null ||
+        now.difference(_trackPolyAt!) >= _trackPolyInterval;
+    if (trackPts.length >= 2 && (_trackLineCache.isEmpty || stale)) {
+      final List<LatLng> snapshot = List<LatLng>.of(trackPts);
+      _trackLineCache = <Polyline>{
+        Polyline(
+          points: snapshot,
+          color: RouteStyle.trackCasingColor,
+          width: RouteStyle.trackCasingWidth,
+          capType: CapType.round,
+          joinType: JoinType.round,
+          zIndex: RouteStyle.zTrackCasing,
+        )..setIdForCopy('track-casing'),
+        Polyline(
+          points: snapshot,
+          color: RouteStyle.trackColor,
+          width: RouteStyle.trackCoreWidth,
+          capType: CapType.round,
+          joinType: JoinType.round,
+          zIndex: RouteStyle.zTrack,
+        )..setIdForCopy('track-core'),
+      };
+      _trackPolyAt = now;
     }
+    lines.addAll(_trackLineCache);
     return lines;
+  }
+
+  /// 规划线三层 Polyline 构建（从 _buildPolylines 拆出，供切片缓存复用）。
+  Set<Polyline> _buildRouteLines(List<LatLng>? completed, List<LatLng> remaining) {
+    final Set<Polyline> out = <Polyline>{};
+    if (completed != null && completed.length >= 2) {
+      out.add(Polyline(
+        points: completed,
+        color: RouteStyle.completedColor,
+        width: RouteStyle.completedWidth,
+        capType: CapType.round,
+        joinType: JoinType.round,
+        zIndex: RouteStyle.zCompleted,
+      )..setIdForCopy('planned-done'));
+    }
+    if (remaining.length >= 2) {
+      out.add(Polyline(
+        points: remaining,
+        color: RouteStyle.casingColor,
+        width: RouteStyle.casingWidth,
+        capType: CapType.round,
+        joinType: JoinType.round,
+        zIndex: RouteStyle.zCasing,
+      )..setIdForCopy('planned-casing'));
+      out.add(Polyline(
+        points: remaining,
+        gradient: true,
+        colorList: RouteStyle.plannedGradient,
+        color: RouteStyle.plannedGradient.first,
+        width: RouteStyle.coreWidth,
+        capType: CapType.round,
+        joinType: JoinType.round,
+        zIndex: RouteStyle.zCore,
+      )..setIdForCopy('planned-core'));
+    }
+    return out;
   }
 
   Set<Marker> _buildMarkers(List<LatLng> trackPts) {
@@ -1010,9 +1093,8 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
         builder: (BuildContext context, _) {
           final RunState state = _recorder.state;
           final List<TrackPoint> pts = _recorder.points;
-          final List<LatLng> trackPts = pts
-              .map((TrackPoint p) => LatLng(p.latitude, p.longitude))
-              .toList();
+          // M-G：增量缓存——只换算新增点，不再每帧全表重映射。
+          final List<LatLng> trackPts = _syncTrackLatLngs(pts);
 
           // 地图匹配：进度 / 偏航状态机 / 下一转弯（阶段 M-D）
           RouteProjection? proj;

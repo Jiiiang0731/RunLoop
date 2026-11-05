@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:collection';
 
 import 'package:flutter/foundation.dart';
 
@@ -56,7 +57,10 @@ class RunRecorder extends ChangeNotifier {
   RunState get state => _state;
   double get distanceMeters => _distanceMeters;
   int get pointCount => _points.length;
-  List<TrackPoint> get points => List.unmodifiable(_points);
+
+  /// 只读视图（阶段 M-G：O(1) 包装替代 List.unmodifiable 的 O(N) 全量拷贝；
+  /// UI 每秒重建多次，长跑 7000+ 点时每次拷贝都是白白的主线程开销）。
+  List<TrackPoint> get points => UnmodifiableListView(_points);
 
   /// 公里分段（含结束时的末段；跑步中实时增长）。
   List<KmSplit> get kmSplits => List.unmodifiable(_kmSplits);

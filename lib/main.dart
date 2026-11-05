@@ -6,6 +6,8 @@ import 'screens/home_screen.dart';
 import 'services/client_config_service.dart';
 import 'services/device_id.dart';
 import 'services/location/location_service.dart';
+import 'services/nav/nav_settings.dart';
+import 'services/nav/tts_service.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -49,14 +51,24 @@ class _RunLoopAppState extends State<RunLoopApp> {
     }
   }
 
-  /// 启动预热（阶段 K 规范⑦⑨）：设备 ID 预生成 + 远程配置拉取/沿用缓存。
-  /// 仅在用户同意隐私政策后调用；设备 ID 为本地随机串（不含硬件标识符），
-  /// 服务端只存其哈希。任何失败都静默——离线时 App 功能不受影响。
+  /// 启动预热（阶段 K 规范⑦⑨ + 阶段 M-G）：设备 ID 预生成 + 远程配置
+  /// 拉取/沿用缓存 + TTS 引擎预热。仅在用户同意隐私政策后调用；设备 ID
+  /// 为本地随机串（不含硬件标识符），服务端只存其哈希。任何失败都
+  /// 静默——离线时 App 功能不受影响。
   Future<void> _warmUpServices() async {
     try {
       await DeviceId.get();
     } catch (_) {
       // 忽略：首次网络调用时会再试。
+    }
+    // TTS 引擎预热（M-G）：倒计时/导航首响延迟不含引擎冷启动。
+    // 仅在语音导航开启时预热；失败静默（跑步页 speak 时自动重试）。
+    try {
+      if (NavSettings.instance.voiceNavEnabled) {
+        await FlutterTtsEngine.shared.warmUp();
+      }
+    } catch (_) {
+      // 忽略：预热是优化而非依赖。
     }
     try {
       await appClientConfig.init();

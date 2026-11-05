@@ -101,6 +101,18 @@ class FlutterTtsEngine implements SpeechEngine {
   /// 当前已应用的引擎包名（null = 系统默认）。
   String? get enginePkg => _enginePkg;
 
+  /// 预热（阶段 M-G）：在进入跑步页之前完成引擎初始化——倒计时「三。」
+  /// 与第一条导航播报的首响延迟不再包含引擎冷启动开销。
+  /// 失败不抛出也不影响功能：speak 时 _ensureInit 会重试。
+  Future<void> warmUp() async {
+    try {
+      await _ensureInit();
+    } catch (e) {
+      VoiceLog.instance
+          .log(VoiceLogKind.lifecycle, 'tts', detail: '预热失败(将重试): $e');
+    }
+  }
+
   Future<void> _ensureInit() async {
     if (_initialized) return;
     _tts.setCompletionHandler(() => _onNative('done'));
