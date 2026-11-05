@@ -244,3 +244,84 @@ List<TurnAnnotation> buildTurnAnnotations(
   kept.sort((TurnAnnotation a, TurnAnnotation b) => a.cumM.compareTo(b.cumM));
   return kept;
 }
+
+// ---------------- 方向箭头布点（阶段 M-F 6.2） ----------------
+
+/// 一枚方向箭头的布点方案（纯视觉：坐标只喂 Marker，不写回路线）。
+class ArrowPlacement {
+  const ArrowPlacement({
+    required this.at,
+    required this.bearing,
+    required this.cumM,
+    required this.back,
+  });
+
+  /// 折线上的真实位置（未偏移——6.2：偏移绝不改变真实坐标语义）。
+  final LatLng at;
+
+  /// 该点真实前进方向（度，正北顺时针）。
+  final double bearing;
+
+  /// 累计里程（米）。
+  final double cumM;
+
+  /// true = 返程腿（overlaps pass2 覆盖段）→ 空心箭头样式。
+  final bool back;
+}
+
+/// 沿折线布放方向箭头（6.2）：
+/// - 直行段稀疏均匀（间距 [spacingMeters]，上限 [maxCount]）；
+/// - 关键转弯由 [annotations]（转弯标注）负责，箭头在标注 ±[avoidM]
+///   米内自动避让——不堆叠、各司其职；
+/// - 落在服务端真实 overlaps pass2 里程区间的箭头判定为返程（形状+颜色
+///   双编码）；去/返共路段两侧的同时可见性由成对转弯标注保证
+///  （offsetPerpendicular ±16px，见 buildTurnAnnotations）。
+List<ArrowPlacement> planArrowPlacements(
+  List<LatLng> points, {
+  required List<OverlapGroup> overlaps,
+  required List<TurnAnnotation> annotations,
+  double spacingMeters = 2500,
+  int maxCount = 8,
+  double avoidM = 150,
+}) {
+  if (points.length < 3 || spacingMeters <= 0 || maxCount <= 0) {
+    return <ArrowPlacement>[];
+  }
+  final List<double> cum = cumulativeMeters(points);
+  final List<ArrowPlacement> out = <ArrowPlacement>[];
+  double next = spacingMeters;
+  for (int i = 1; i < points.length - 1; i++) {
+    if (cum[i] < next) continue;
+    final LatLng here = points[i];
+    final LatLng nextPt = points[i + 1];
+    if (here.latitude == nextPt.latitude && here.longitude == nextPt.longitude) {
+      continue;
+    }
+    final double cumHere = cum[i];
+    // 转弯标注避让带：箭头绝不与标注堆叠（6.2 直行少放、转弯清晰）
+    bool nearAnnotation = false;
+    for (final TurnAnnotation a in annotations) {
+      if ((a.cumM - cumHere).abs() < avoidM) {
+        nearAnnotation = true;
+        break;
+      }
+    }
+    if (!nearAnnotation) {
+      final bool back = overlaps.any((OverlapGroup g) =>
+          g.passes.any((OverlapPass p) =>
+              p.pass == 2 &&
+              p.cumStartM > 0 &&
+              cumHere >= p.cumStartM &&
+              cumHere <= p.cumEndM));
+      out.add(ArrowPlacement(
+        at: here,
+        bearing: bearingDeg(here, nextPt),
+        cumM: cumHere,
+        back: back,
+      ));
+    }
+    next += spacingMeters;
+    if (out.length >= maxCount) break;
+  }
+  return out;
+}

@@ -164,4 +164,105 @@ void main() {
       expect(g.direction, 'reverse');
     });
   });
+
+  group('planArrowPlacements（阶段 M-F 6.2）', () {
+    List<LatLng> pts() => outAndBackPolyline()
+        .map((List<double> p) => LatLng(p[1], p[0]))
+        .toList();
+
+    test('直行段稀疏均匀布点，方位角取真实前进方向', () {
+      final List<ArrowPlacement> as1 = planArrowPlacements(
+        pts(),
+        overlaps: const <OverlapGroup>[],
+        annotations: const <TurnAnnotation>[],
+        spacingMeters: 300,
+      );
+      expect(as1.length, 3);
+      // 去程箭头指向东（≈90°），返程箭头指向西（≈270°）
+      expect(as1[0].bearing, closeTo(90, 1));
+      expect(as1[1].bearing, closeTo(270, 1));
+      // 里程递增、间距 ≈ spacing
+      expect(as1[1].cumM, greaterThan(as1[0].cumM));
+      expect(as1[1].cumM - as1[0].cumM, closeTo(300, 60));
+    });
+
+    test('overlaps pass2 区间内的箭头判定为返程（形状+颜色双编码）', () {
+      final List<OverlapGroup> overlaps = <OverlapGroup>[
+        OverlapGroup(
+          refBearing: 90,
+          direction: 'reverse',
+          ranges: const <OverlapRange>[],
+          passes: const <OverlapPass>[
+            OverlapPass(pass: 1, start: 2, end: 8, cumStartM: 100, cumEndM: 400),
+            OverlapPass(
+                pass: 2, start: 13, end: 19, cumStartM: 560, cumEndM: 1113),
+          ],
+        ),
+      ];
+      final List<ArrowPlacement> as1 = planArrowPlacements(
+        pts(),
+        overlaps: overlaps,
+        annotations: const <TurnAnnotation>[],
+        spacingMeters: 300,
+      );
+      expect(as1[0].back, isFalse, reason: '去程段箭头 = 实心');
+      expect(as1[1].back, isTrue, reason: 'pass2 段箭头 = 空心');
+      expect(as1[2].back, isTrue);
+    });
+
+    test('转弯标注避让带内不布箭头（不堆叠，各司其职）', () {
+      final List<TurnAnnotation> anns = <TurnAnnotation>[
+        TurnAnnotation(
+          id: 'ta-x-out',
+          at: pts()[11],
+          bearing: 270,
+          side: -1,
+          kind: TurnKind.out,
+          cumM: 612,
+          priorityM: 100,
+        ),
+      ];
+      final List<ArrowPlacement> as1 = planArrowPlacements(
+        pts(),
+        overlaps: const <OverlapGroup>[],
+        annotations: anns,
+        spacingMeters: 300,
+        avoidM: 150,
+      );
+      expect(as1.length, 2, reason: '612m 处的箭头被标注避让带跳过');
+      for (final ArrowPlacement a in as1) {
+        expect((a.cumM - 612).abs(), greaterThanOrEqualTo(150));
+      }
+    });
+
+    test('maxCount 上限与非法参数兜底', () {
+      final List<ArrowPlacement> many = planArrowPlacements(
+        pts(),
+        overlaps: const <OverlapGroup>[],
+        annotations: const <TurnAnnotation>[],
+        spacingMeters: 60,
+        maxCount: 4,
+      );
+      expect(many.length, lessThanOrEqualTo(4));
+      expect(
+        planArrowPlacements(<LatLng>[pts()[0], pts()[1]],
+            overlaps: const <OverlapGroup>[],
+            annotations: const <TurnAnnotation>[]),
+        isEmpty,
+      );
+    });
+
+    test('布点绝不修改真实坐标（纯视觉铁律）', () {
+      final List<LatLng> p = pts();
+      final List<double> before =
+          p.map((LatLng e) => e.longitude * 1e6 + e.latitude).toList();
+      planArrowPlacements(p,
+          overlaps: const <OverlapGroup>[],
+          annotations: const <TurnAnnotation>[],
+          spacingMeters: 300);
+      final List<double> after =
+          p.map((LatLng e) => e.longitude * 1e6 + e.latitude).toList();
+      expect(after, before);
+    });
+  });
 }

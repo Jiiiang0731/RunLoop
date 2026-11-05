@@ -26,10 +26,14 @@ class RouteStyle {
 
   static List<Color> gradient(int index) => gradients[index % gradients.length];
 
-  /// 规划路线（跑步页）固定用蓝色渐变。
+  /// 规划路线（跑步页）固定用深蓝渐变。
+  /// 阶段 M-F v3：双方案对比评审后由「蓝→青」改为「深蓝→亮蓝」——
+  /// 原青色尾段在浅色底图/阳光直射下相对亮度对比度仅 1.38（实测，
+  /// tools/visual_scheme_metrics.py），新色系最低 3.31、最高 5.54，
+  /// 可读性显著提升且保留渐变层次（6.1）。
   static const List<Color> plannedGradient = <Color>[
-    Color(0xFF2979FF),
-    Color(0xFF00E5FF),
+    Color(0xFF1565C0),
+    Color(0xFF1E88E5),
   ];
 
   /// GPS 实际轨迹颜色。
@@ -66,6 +70,18 @@ class RouteStyle {
 
   /// 标注距中心线的屏幕像素偏移（随缩放换算为米，两侧对称）。
   static const double turnAnnotationPxOffset = 16.0;
+
+  // ---------- 去/返方向箭头（阶段 M-F 6.2：形状+颜色双编码） ----------
+  /// 去程：深蓝实心箭头；返程：青绿空心箭头——色觉障碍也可分辨。
+  static const Color arrowOutColor = Color(0xFF0D47A1);
+  static const Color arrowBackColor = Color(0xFF00695C);
+
+  // ---------- canonical 参考层（阶段 M-F 6.3 / M-D 5.7#9） ----------
+  /// 重规划后原规划路线保留为最淡参考线（已完成部分由 GPS 轨迹诚实
+  /// 呈现，绝不覆盖）；仅当导航基准 ≠ canonical 时绘制。
+  static const Color canonicalRefColor = Color(0x5978909C);
+  static const double canonicalRefWidth = 2.0;
+  static const double zCanonicalRef = 4;
 
   // ---------- 重规划连接段（阶段 M-D，任务书 6.3：与原路线明显区分） ----------
   /// 琥珀色主线 + 白描边，压在蓝色剩余路线之上、GPS 轨迹之下。

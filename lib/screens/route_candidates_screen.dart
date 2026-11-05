@@ -57,7 +57,8 @@ class _RouteCandidatesScreenState extends State<RouteCandidatesScreen>
   AMapController? _controller;
   bool _mapReady = false;
   bool _regenerating = false;
-  BitmapDescriptor? _arrowIcon;
+  BitmapDescriptor? _arrowIcon; // 去程：深蓝实心（阶段 M-F 6.2 双编码）
+  BitmapDescriptor? _arrowBackIcon; // 返程：青绿空心
   BitmapDescriptor? _runnerIcon;
   BitmapDescriptor? _startIcon;
   BitmapDescriptor? _turnOutIcon;
@@ -188,8 +189,12 @@ class _RouteCandidatesScreenState extends State<RouteCandidatesScreen>
 
   Future<void> _loadIcons() async {
     try {
+      // 方向箭头改用语义固定色（去=深蓝实心 / 返=青绿空心，6.2 形状+
+      // 颜色双编码），不再随候选主色变化——与转弯标注的青/紫体系协调。
       final BitmapDescriptor arrow =
-          await createArrowIcon(RouteStyle.primary(_selected));
+          await createArrowIcon(RouteStyle.arrowOutColor);
+      final BitmapDescriptor arrowBack =
+          await createArrowIcon(RouteStyle.arrowBackColor, open: true);
       final BitmapDescriptor start = await createStartIcon();
       final BitmapDescriptor turnOut =
           await createTurnAnnotationIcon(RouteStyle.turnOutColor);
@@ -198,6 +203,7 @@ class _RouteCandidatesScreenState extends State<RouteCandidatesScreen>
       if (mounted) {
         setState(() {
           _arrowIcon = arrow;
+          _arrowBackIcon = arrowBack;
           _startIcon = start;
           _turnOutIcon = turnOut;
           _turnBackIcon = turnBack;
@@ -280,11 +286,10 @@ class _RouteCandidatesScreenState extends State<RouteCandidatesScreen>
     final Color c = RouteStyle.primary(index);
     try {
       final BitmapDescriptor runner = await createRunnerIcon(c);
-      final BitmapDescriptor arrow = await createArrowIcon(c);
+      // 方向箭头已改为语义固定色（去/返双编码），不再随候选主色重建。
       if (!mounted) return;
       setState(() {
         _runnerIcon = runner;
-        _arrowIcon = arrow;
         if (_runnerMarker != null) {
           _runnerMarker = _runnerMarker!.copyWith(iconParam: runner);
         }
@@ -439,21 +444,30 @@ class _RouteCandidatesScreenState extends State<RouteCandidatesScreen>
           zIndex: 200,
         )..setIdForCopy('start-marker'),
       };
-      // 静态完成后的方向箭头（小巧稀疏，主色 + 白描边）
+      // 方向箭头（阶段 M-F 6.2）：直行段稀疏布点、避让转弯标注带、
+      // 去程实心/返程空心（形状+颜色双编码，方向=真实前进方位）。
       if (_animDone && _arrowIcon != null && _routes.isNotEmpty) {
         final List<LatLng> pts = _latLngs(_routes[_selected]);
         final double lengthM = _routeLengthMeters(pts);
         final int count = arrowCountForLengthMeters(lengthM);
         final double spacing = count > 0 ? lengthM / (count + 1) : 3500;
         int ai = 0;
-        for (final MapEntry<LatLng, double> e in arrowPointsByDistance(
-            pts, spacingMeters: spacing, maxCount: count)) {
+        for (final ArrowPlacement a in planArrowPlacements(
+          pts,
+          overlaps: _routes[_selected].overlaps,
+          annotations: _annotations,
+          spacingMeters: spacing,
+          maxCount: count,
+        )) {
+          final BitmapDescriptor? icon =
+              a.back ? (_arrowBackIcon ?? _arrowIcon) : _arrowIcon;
+          if (icon == null) continue;
           statics.add(Marker(
-            position: e.key,
-            rotation: e.value,
-            icon: _arrowIcon!,
+            position: a.at,
+            rotation: a.bearing,
+            icon: icon,
             anchor: const Offset(0.5, 0.5),
-            zIndex: 150,
+            zIndex: RouteStyle.zArrowMarker,
           )..setIdForCopy('arrow-$ai'));
           ai++;
         }

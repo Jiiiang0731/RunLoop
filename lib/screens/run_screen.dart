@@ -794,6 +794,19 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
   /// 以琥珀色单独绘制（6.3：rerouteSegment 与原路线明显区分）。
   Set<Polyline> _buildPolylines(List<LatLng> trackPts) {
     final Set<Polyline> lines = <Polyline>{};
+    // ---- 6.3 canonicalRoute 参考层：重规划后原规划路线保留为最淡参考线。
+    // 已跑部分由 GPS 轨迹诚实呈现、绝不被覆盖；仅当导航基准已切换
+    //（_connectorPts != null）时绘制，正常跑步时不出现多余图层。
+    if (_connectorPts != null && _plannedPts.length >= 2) {
+      lines.add(Polyline(
+        points: _plannedPts,
+        color: RouteStyle.canonicalRefColor,
+        width: RouteStyle.canonicalRefWidth,
+        capType: CapType.round,
+        joinType: JoinType.round,
+        zIndex: RouteStyle.zCanonicalRef,
+      )..setIdForCopy('canonical-ref'));
+    }
     final RoutePath? path = _activePath;
     if (path != null && _activePts.length >= 2) {
       List<LatLng> remaining = _activePts;

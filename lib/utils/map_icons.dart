@@ -19,9 +19,13 @@ double haversineMeters(LatLng a, LatLng b) {
   return 2 * _earthR * math.asin(math.min(1.0, math.sqrt(h)));
 }
 
-/// 生成一个朝上（北）的箭头位图：主色箭形 + 白色描边（任何底图上都清晰），
-/// 配合 [Marker.rotation] 使用。阶段 K v2：48px → 36px（小巧、不压细主线）。
-Future<BitmapDescriptor> createArrowIcon(Color color) async {
+/// 方向箭头位图（阶段 M-F 6.2 定稿：自然、现代、轻量）。
+///
+/// 两种形态构成去/返程的「形状 + 颜色」双编码（色觉障碍也可分辨）：
+/// - [open] = false：实心箭头 + 白描边（去程，深蓝）；
+/// - [open] = true：空心描边箭头 + 白色衬底（返程，青绿）。
+/// 方位角永远取折线真实前进方向（调用方传入 Marker.rotation）。
+Future<BitmapDescriptor> createArrowIcon(Color color, {bool open = false}) async {
   const double size = 36;
   final ui.PictureRecorder recorder = ui.PictureRecorder();
   final Canvas canvas = Canvas(recorder);
@@ -31,16 +35,34 @@ Future<BitmapDescriptor> createArrowIcon(Color color) async {
     ..lineTo(size / 2, size - 12)
     ..lineTo(8, size - 7)
     ..close();
-  // 先画白色描边（略粗），再画主色填充
-  canvas.drawPath(
-    path,
-    Paint()
-      ..color = Colors.white
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 4
-      ..strokeJoin = ui.StrokeJoin.round,
-  );
-  canvas.drawPath(path, Paint()..color = color);
+  if (open) {
+    // 空心形态：先铺白色衬底保证任何底图可读，再以主色描边轮廓
+    canvas.drawPath(
+      path,
+      Paint()
+        ..color = Colors.white
+        ..style = PaintingStyle.fill,
+    );
+    canvas.drawPath(
+      path,
+      Paint()
+        ..color = color
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 3.4
+        ..strokeJoin = ui.StrokeJoin.round,
+    );
+  } else {
+    // 实心形态：白色描边（略粗）+ 主色填充
+    canvas.drawPath(
+      path,
+      Paint()
+        ..color = Colors.white
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 4
+        ..strokeJoin = ui.StrokeJoin.round,
+    );
+    canvas.drawPath(path, Paint()..color = color);
+  }
   final ui.Image image =
       await recorder.endRecording().toImage(size.toInt(), size.toInt());
   final ByteData? data = await image.toByteData(format: ui.ImageByteFormat.png);
@@ -48,26 +70,27 @@ Future<BitmapDescriptor> createArrowIcon(Color color) async {
   return BitmapDescriptor.fromBytes(data!.buffer.asUint8List());
 }
 
-/// 去/返转弯标注图标（阶段 K 规范③）：白色圆底 + 彩色人字形（chevron），
-/// 与实心方向箭头明显区分；配合 [Marker.rotation] 指向行进方向。
-/// 颜色由调用方传入（去=青 / 返=紫，见 RouteStyle.turnOut/BackColor）。
+/// 去/返转弯标注图标（阶段 M-F 6.2 重设计）：不再使用「圆圈包裹的人字形」，
+/// 改为柔和半透明白色衬底 + 粗圆头人字形——轻量现代，与实心方向箭头
+/// 形态区分明确；颜色语义保留（去=青 / 返=紫），配合 [Marker.rotation]
+/// 指向行进方向。
 Future<BitmapDescriptor> createTurnAnnotationIcon(Color color) async {
   const double size = 30;
   final ui.PictureRecorder recorder = ui.PictureRecorder();
   final Canvas canvas = Canvas(recorder);
   const Offset c = Offset(size / 2, size / 2);
-  canvas.drawCircle(c, size / 2 - 2, Paint()..color = const Color(0x44000000));
-  canvas.drawCircle(c, size / 2 - 3.5, Paint()..color = Colors.white);
+  // 柔和衬底（70% 白，无硬描边圆圈）：保证浅底图上可读又不喧宾夺主
+  canvas.drawCircle(c, size / 2 - 3, Paint()..color = const Color(0xB4FFFFFF));
   final Path chev = Path()
-    ..moveTo(7.5, 19.5)
-    ..lineTo(size / 2, 8.5)
-    ..lineTo(size - 7.5, 19.5);
+    ..moveTo(8.5, 19.0)
+    ..lineTo(size / 2, 9.5)
+    ..lineTo(size - 8.5, 19.0);
   canvas.drawPath(
     chev,
     Paint()
       ..color = color
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 4.2
+      ..strokeWidth = 4.6
       ..strokeCap = ui.StrokeCap.round
       ..strokeJoin = ui.StrokeJoin.round,
   );
@@ -168,29 +191,5 @@ int arrowCountForLengthMeters(double lengthM) {
   return n.clamp(2, 5);
 }
 
-/// 按「沿路线累计距离」均匀取箭头点，方位角取该点的真实前进方向。
-List<MapEntry<LatLng, double>> arrowPointsByDistance(
-  List<LatLng> points, {
-  double spacingMeters = 2500,
-  int maxCount = 8,
-}) {
-  if (points.length < 3 || spacingMeters <= 0) {
-    return <MapEntry<LatLng, double>>[];
-  }
-  final List<MapEntry<LatLng, double>> out = <MapEntry<LatLng, double>>[];
-  double cumulative = 0;
-  double next = spacingMeters;
-  for (int i = 1; i < points.length - 1; i++) {
-    cumulative += haversineMeters(points[i - 1], points[i]);
-    if (cumulative < next) continue;
-    final LatLng here = points[i];
-    final LatLng nextPt = points[i + 1];
-    if (here.latitude == nextPt.latitude && here.longitude == nextPt.longitude) {
-      continue;
-    }
-    out.add(MapEntry<LatLng, double>(here, bearingDeg(here, nextPt)));
-    next += spacingMeters;
-    if (out.length >= maxCount) break;
-  }
-  return out;
-}
+// 旧 arrowPointsByDistance 已由 turn_annotations.planArrowPlacements 取代
+//（阶段 M-F 6.2：需要去/返 pass 判定与转弯标注避让带，纯距离布点不够）。
