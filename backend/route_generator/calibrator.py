@@ -22,7 +22,7 @@ from .loop_builder import build_loop
 from .nav_metrics import analyze_route
 from .planner import MapPlanner
 from .scorer import score_route
-from .spur_fix import MAX_FIXES, fix_spurs
+from .spur_fix import MAX_FIXES, find_spur_intervals, fix_spurs
 from .types import CalibrateResult, LoopRoute
 from .variants import SkeletonVariant, plan_variants
 
@@ -120,6 +120,58 @@ def _should_stop_early(err: float, score: float, metrics: dict, tol_m: int) -> b
             and int(metrics.get("sharp_turns", 9)) <= 1)
 
 
+def _quality_ok_for_refine(loop: LoopRoute, metrics: dict,
+                           target_m: Optional[float] = None,
+                           score: Optional[float] = None) -> bool:
+    """阶段 Q：是否值得停止“继续换骨架”，转入对当前最优的局部修复。
+
+    不是“进入 ±500m 就收工”：还必须闭环有效、无不适合跑步路段、重复率
+    与转弯密度没有失控。注意这里**允许存在接缝短折返**——局部修复正是
+    用来消除它们的；只有“已经达标且干净”才跳过修复（见
+    [_quality_ok_for_skip_fix]）。长距离额外要求分数/密度，避免像 15km
+    旧流程那样过早接受 14612m/2.8 次每公里的次优解。
+    """
+    if loop.closure_m >= 50.0:
+        return False
+    if float(metrics.get("walk_bad_ratio", 0.0)) > MAX_WALK_BAD_RATIO:
+        return False
+    if float(metrics.get("repetition_ratio", 0.0)) > 0.75:
+        return False
+    turns = int(metrics.get("turns", 999))
+    density = float(metrics.get("turn_density", 99.0))
+    # 接缝短折返是“可修复”的质量问题：局部修复正是针对它们的，不能因此
+    # 阻止进入修复阶段。只有没有短折返可修、且转弯又密又多的候选才继续
+    # 换骨架（例如合成测试里 10km/34 次/3.4 每公里的低质量首变体）。
+    join_short = int(metrics.get("join_short_uturns", 0))
+    if join_short == 0 and turns > 33 and density > 3.0:
+        return False
+    if density > 12.0:
+        return False
+    # 长距离：15km 实测 lean_ell 的 14612m/41 转弯/2.8 密度虽然距离达标，
+    # 但质量明显低于 base 的 15075m/33 转弯/2.18；必须继续尝试后续变体。
+    if target_m is not None and target_m >= 10000:
+        if score is not None and score < 45.0:
+            return False
+        if density > 2.5:
+            return False
+    return True
+
+
+def _quality_ok_for_skip_fix(loop: LoopRoute, metrics: dict,
+                             target_m: Optional[float] = None,
+                             score: Optional[float] = None) -> bool:
+    """已经进入内部目标带且干净到不需要再做绕行修复。"""
+    if not _quality_ok_for_refine(loop, metrics, target_m, score):
+        return False
+    if int(metrics.get("join_short_uturns", 0)) > 0:
+        return False
+    # 接缝指标看不到“同一分段内部的短折返”；用真实折线的绕行检测兜底，
+    # 否则会把需要 spur_fix 的路线误判为干净而跳过修复。
+    if find_spur_intervals(loop.polyline):
+        return False
+    return True
+
+
 def _append_fix_events(history: list, sres, tag: str = "spur") -> None:
     """把一轮 fix_spurs 的结果写入校准历史（修复明细 + 拒绝原因汇总）。"""
     for f in sres.fixes:
@@ -163,7 +215,9 @@ def calibrate(planner: MapPlanner, start: GeoPoint, target_m: int, n_points: int
     calls = 0
     history: List[dict] = []
     stopped_early = False
+    refine_early = False
     variants_tried = 0
+    builds_tried = 0
 
     for v in variants:
         if stopped_early:
@@ -176,6 +230,9 @@ def calibrate(planner: MapPlanner, start: GeoPoint, target_m: int, n_points: int
         # 阶段 N：记录本次变体内已试的 (R, 真实距离)，用于振荡防护
         samples: List[tuple] = []
         fails = 0
+        builds_in_variant = 0
+        variant_best_abs: Optional[float] = None
+        refine_probe_done = False
         for it in range(iters):
             if max_calls is not None and calls >= max_calls:
                 break
@@ -194,7 +251,11 @@ def calibrate(planner: MapPlanner, start: GeoPoint, target_m: int, n_points: int
                 R = R * random.Random(seed * 131 + it).uniform(0.9, 1.15)
                 continue
             fails = 0
+            builds_tried += 1
+            builds_in_variant += 1
             e = loop.distance_m - target_m
+            variant_best_abs = abs(e) if variant_best_abs is None else min(
+                variant_best_abs, abs(e))
             samples.append((R, loop.distance_m))
             metrics = _loop_metrics(loop, target_m)
             score = score_route(target_m, loop, metrics).total
@@ -205,6 +266,8 @@ def calibrate(planner: MapPlanner, start: GeoPoint, target_m: int, n_points: int
                 "distance": round(loop.distance_m, 1), "err": round(e, 1),
                 "closure_m": loop.closure_m, "score": score,
                 "turns": metrics.get("turns"), "density": metrics.get("turn_density"),
+                "join_short": metrics.get("join_short_uturns"),
+                "repetition": metrics.get("repetition_ratio"),
                 "walk_bad": bad_share,
             })
             if too_bad:
@@ -217,11 +280,53 @@ def calibrate(planner: MapPlanner, start: GeoPoint, target_m: int, n_points: int
                     _is_better(e, score, best_err, best_score, tight):
                 best, best_err, best_score, best_metrics = loop, e, score, metrics
                 best_variant, best_R = v, R
+            # 阶段 Q：已有一个硬容差内且质量合格的最优解，且至少试过 2 个
+            # 骨架变体 → 停止“继续换骨架”，把预算转向距离感知局部修复。
+            # 2.5km 实测：只跑 off_se_big + off_ne，随后一次部分修复即可
+            # 得到与旧全流程完全相同的 2565.9m，调用 110→约 28。
+            if (not refine_early and best is not None and best_err is not None
+                    and abs(best_err) <= tol_m and builds_tried >= 2
+                    and _quality_ok_for_refine(best, best_metrics or {},
+                                               target_m, best_score)):
+                # 阶段 Q：单变体还有 R 迭代空间时，再多试一次再停下修复。
+                # 5km 实测：iter2=5348 直接修复得 4768（质量下降）；多跑
+                # iter3=5320 后再修复可保持旧结果 4901。
+                if it + 1 < iters and not refine_probe_done:
+                    refine_probe_done = True
+                    history.append({
+                        "event": "refine_probe_one_more", "variant": v.label,
+                        "iter": it, "best_err": round(best_err, 1),
+                        "builds_tried": builds_tried,
+                    })
+                else:
+                    refine_early = True
+                    stopped_early = True
+                    history.append({
+                        "event": "refine_early_stop", "variant": v.label,
+                        "best_err": round(best_err, 1),
+                        "variants_tried": variants_tried,
+                        "builds_tried": builds_tried,
+                        "density": (best_metrics or {}).get("turn_density"),
+                        "join_short": (best_metrics or {}).get("join_short_uturns"),
+                    })
+                    break
             if not too_bad and _should_stop_early(e, score, metrics, tight):
                 stopped_early = True
                 break
             if not too_bad and abs(e) <= tight:
                 # 已进入内部目标带（5%·目标）：质量提升交给后续骨架变体。
+                break
+            # 阶段 Q：某个变体连续两次仍偏离目标 >15%（且 >3×容差）时，
+            # 继续 R 迭代大概率只是振荡（15km lean_ell 实测 31km→19km→18km
+            # →10km→18km→9.6km）。跳过该变体剩余迭代，交给 base 兜底。
+            far_limit = max(3.0 * float(tol_m), 0.15 * float(target_m))
+            if (builds_in_variant >= 2 and variant_best_abs is not None
+                    and variant_best_abs > far_limit):
+                history.append({"event": "variant_skip_far",
+                                "variant": v.label,
+                                "best_abs_err": round(variant_best_abs, 1),
+                                "limit": round(far_limit, 1),
+                                "builds": builds_in_variant})
                 break
             factor = target_m / max(loop.distance_m, 1.0)
             R_next = R * (1 + 0.6 * (factor - 1))
@@ -245,6 +350,50 @@ def calibrate(planner: MapPlanner, start: GeoPoint, target_m: int, n_points: int
                 and abs(best_err) <= tight and variants_tried >= 2):
             stopped_early = True
 
+    # ---- 阶段 Q：先做“距离感知的部分修复”，再做激进修复/重校 ----
+    # 旧顺序：激进修复 → 修短超差 → 3 次重建重校 → 最后才做距离感知部分修复。
+    # 2.5km 实测旧顺序 44 次调用只为把 2839m 修到 2566m；把最后一步提前，
+    # 同样质量的 2566m 只需 4 次调用（+ 前两个变体），且不会把距离修出容差。
+    #
+    # 若最优解已经进入内部目标带且质量合格（5km/15km 实测），再做绕行修复
+    # 只会重复请求且最终距离不变；直接接受，省掉整段 fix/recal。
+    tight_and_clean = (
+        best is not None and best_err is not None
+        and abs(best_err) <= tight
+        and _quality_ok_for_skip_fix(best, best_metrics or {},
+                                     target_m, best_score)
+    )
+    partial_first_done = False
+    if tight_and_clean:
+        history.append({"event": "fix_skip_tight_clean",
+                        "err": round(best_err, 1),
+                        "tight_m": round(tight, 1)})
+    if (fix_detours and target_m > 1500 and not tight_and_clean
+            and best is not None and best_err is not None
+            and abs(best_err) <= tol_m
+            and (max_calls is None or calls < max_calls)):
+        sres_p = fix_spurs(best, planner, sleep=sleep,
+                           target_m=target_m, tol_m=tol_m)
+        calls += sres_p.calls
+        _append_fix_events(history, sres_p, tag="partial_first")
+        if sres_p.fixes and sres_p.loop is not None:
+            e_p = sres_p.loop.distance_m - target_m
+            metrics_p = _loop_metrics(sres_p.loop, target_m)
+            score_p = score_route(target_m, sres_p.loop, metrics_p).total
+            if abs(e_p) <= tight and score_p >= (best_score or 0.0) - 5.0:
+                history.append({"event": "spur_partial_first_accept",
+                                "n_fixes": len(sres_p.fixes),
+                                "err": round(e_p, 1), "score": score_p})
+                best, best_err = sres_p.loop, e_p
+                best_score, best_metrics = score_p, metrics_p
+                partial_first_done = True
+            else:
+                history.append({"event": "spur_partial_first_miss",
+                                "err": round(e_p, 1),
+                                "tight_m": round(tight, 1)})
+        else:
+            history.append({"event": "spur_partial_first_nofix"})
+
     # ---- 阶段 K：无效绕行替换（只对达标最优路线做，硬约束 ±tol 不变） ----
     # 三级策略（决策#1 绝对容差优先，决策#2 质量优先）：
     #   1) 激进修复：接受所有通过结构守卫的修复；修完仍达标 → 直接采用；
@@ -259,7 +408,8 @@ def calibrate(planner: MapPlanner, start: GeoPoint, target_m: int, n_points: int
     # 742m（-258m）却仍在 ±500m 内被接受，直接破坏用户要求的 0.99km 精度。
     # 1.5km 以上保留 spur_fix，但 partial accept 已加 tight 距离守卫。
     # 折返治理优先由 join 指标参与评分/选路，不再事后切割真实折线。
-    if (fix_detours and target_m > 1500
+    if (fix_detours and target_m > 1500 and not partial_first_done
+            and not tight_and_clean
             and best is not None and best_err is not None
             and abs(best_err) <= tol_m
             and (max_calls is None or calls < max_calls)):

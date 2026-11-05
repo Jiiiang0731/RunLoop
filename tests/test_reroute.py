@@ -10,6 +10,7 @@ import json
 import math
 import os
 import sys
+import time
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -286,6 +287,65 @@ class TestRerouteEndpoint(unittest.TestCase):
         r = self.client.post("/api/route/reroute", data="{oops",
                              content_type="application/json")
         self.assertEqual(r.status_code, 400)
+
+    def _forward_body(self, **over):
+        now = time.time() * 1000
+        recent = [
+            [116.0030, 39.9000, 5, 3.0, now - 8000],
+            [116.0038, 39.9000, 5, 3.0, now - 4000],
+            [116.0045, 39.9000, 5, 3.0, now],
+        ]
+        b = self._body(forward_only=True, heading_source="gps",
+                       heading_confidence=0.9, request_id="req-fwd",
+                       sent_at_ms=now, recent_points=recent,
+                       min_forward_gain_m=10, max_backtrack_m=25,
+                       max_initial_angle_deg=90)
+        b.update(over)
+        return b
+
+    def test_forward_contract(self):
+        r = self._post(self._forward_body())
+        self.assertEqual(r.status_code, 200)
+        j = r.get_json()
+        self.assertTrue(j["success"], j.get("error"))
+        self.assertIn(j["strategy"], ("forward_rejoin", "forward_loop"))
+        self.assertEqual(j["request_id"], "req-fwd")
+        self.assertIn("actual_along_m", j)
+        self.assertIn("heading_used", j)
+        self.assertIn("initial_angle_deg", j["connector"])
+        self.assertIn("forward_ok", j["connector"])
+        self.assertIn("forward_ok", j["rejoin"])
+        self.assertLessEqual(j["connector"]["backtrack_m"], 25.0)
+        self.assertAlmostEqual(j["merged_remaining_polyline"][0][0],
+                               116.0035, places=4)
+        self.assertAlmostEqual(j["merged_remaining_polyline"][-1][0],
+                               self.poly[-1][0], places=5)
+
+    def test_forward_heading_unreliable(self):
+        r = self._post(self._forward_body(
+            heading=None, heading_source="none", heading_confidence=0.0,
+            recent_points=[]))
+        self.assertEqual(r.status_code, 200)
+        j = r.get_json()
+        self.assertFalse(j["success"])
+        self.assertEqual(j["error_code"], "HEADING_UNRELIABLE")
+        self.assertEqual(j["strategy"], "forward")
+
+    def test_forward_stale_request(self):
+        r = self._post(self._forward_body(
+            sent_at_ms=time.time() * 1000 - 60000))
+        self.assertEqual(r.status_code, 200)
+        j = r.get_json()
+        self.assertFalse(j["success"])
+        self.assertEqual(j["error_code"], "STALE_REQUEST")
+
+    def test_forward_remaining_infeasible(self):
+        r = self._post(self._forward_body(
+            target_m=1000, completed_m=980))
+        self.assertEqual(r.status_code, 200)
+        j = r.get_json()
+        self.assertFalse(j["success"])
+        self.assertEqual(j["error_code"], "REMAINING_DISTANCE_INFEASIBLE")
 
 
 class TestRerouteTargetPreservation(unittest.TestCase):

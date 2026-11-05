@@ -52,16 +52,19 @@ from backend.route_generator import (  # noqa: E402
 from backend.route_generator.geo import simplify_rdp  # noqa: E402
 from backend.route_generator.nav_text import build_nav_instructions  # noqa: E402
 from backend.route_generator.overlap import detect_overlaps  # noqa: E402
+from backend.route_generator.planner import walk_cache_stats  # noqa: E402
 from backend.route_generator.sampling import sample_points_by_distance  # noqa: E402
 from backend.route_generator.turn_events import (  # noqa: E402
     build_turn_events, events_to_steps,
 )
 
 KEY_FILE = os.path.join(ROOT, "config", "amap_key.local")
-SERVICE_VERSION = "0.7"
+SERVICE_VERSION = "0.8"
 # 健康检查里显式声明能力，便于确认「进程是不是新代码」而不是只看版本号。
 SERVICE_FEATURES = {"anchor_loop": True, "verify_drivable": True,
-                    "turn_events": True, "geometry_preserving": True}
+                    "turn_events": True, "geometry_preserving": True,
+                    "forward_reroute": True, "shared_path_cache": True,
+                    "qps_limiter": True}
 MAX_BODY_BYTES = 256 * 1024
 MAX_API_CALLS_CLAMP = 1500      # 决策#2：质量优先，预算上限放宽（原 1200）
 DEFAULT_MAX_API_CALLS = 800
@@ -299,6 +302,8 @@ def create_app() -> Flask:
             "features": SERVICE_FEATURES,
             "breaker": state.breaker.state,
             "served": state.served,
+            # 阶段 Q：缓存命中/等待统计（不含坐标/密钥），用于 A/B 验证
+            "cache": walk_cache_stats(),
         })
 
     @app.route("/api/client-config", methods=["GET"])
@@ -313,7 +318,7 @@ def create_app() -> Flask:
                 "service_version": SERVICE_VERSION,
                 "announcement": os.environ.get("RUNLOOP_ANNOUNCEMENT", ""),
                 "generate": {"max_api_calls": DEFAULT_MAX_API_CALLS,
-                             "sleep_s": 0.05,
+                             "sleep_s": 0.0,
                              # 锚点模式（阶段 N）：最多 15 个有序参考点
                              "anchors_max": 15, "max_drop_total": 3},
                 "pois": {"interval_m": 1000, "radius": 500, "limit": 3},
@@ -360,7 +365,7 @@ def create_app() -> Flask:
             detour = float(data.get("detour_factor", 1.7))
             max_candidates = int(data.get("max_candidates", 1))
             max_api_calls = int(data.get("max_api_calls", DEFAULT_MAX_API_CALLS))
-            sleep_s = float(data.get("sleep_s", 0.05))
+            sleep_s = float(data.get("sleep_s", 0.0))
             fix_detours = bool(data.get("fix_detours", True))
             verify_drivable = bool(data.get("verify_drivable", False))
         except (TypeError, ValueError, AttributeError) as e:
@@ -495,7 +500,24 @@ def create_app() -> Flask:
             heading = float(heading_raw) if heading_raw is not None else None
             tol_m = float(body.get("tol_m", 500))
             max_calls = int(body.get("max_api_calls", 5))
-        except (TypeError, ValueError):
+            # 阶段 Q：前向重规划上下文（旧客户端不传 = 旧行为）
+            forward_only = bool(body.get("forward_only", False))
+            heading_source = body.get("heading_source")
+            heading_confidence = body.get("heading_confidence")
+            heading_age_ms = body.get("heading_age_ms")
+            request_id = body.get("request_id")
+            sent_at_ms = body.get("sent_at_ms")
+            min_forward_gain_m = float(body.get("min_forward_gain_m", 10))
+            max_backtrack_m = float(body.get("max_backtrack_m", 25))
+            max_initial_angle_deg = float(body.get("max_initial_angle_deg", 90))
+            recent_points = body.get("recent_points") or []
+            route_raw = body.get("route_end")
+            route_end = None
+            if route_raw:
+                route_end = (float(route_raw[0]), float(route_raw[1]))
+            if not isinstance(recent_points, (list, tuple)) or len(recent_points) > 30:
+                return _err(400, "BAD_REQUEST", "recent_points 格式错误")
+        except (TypeError, ValueError, IndexError):
             return _err(400, "BAD_REQUEST", "参数格式错误")
         if not (-180 <= lng <= 180 and -90 <= lat <= 90):
             return _err(400, "BAD_REQUEST", "origin 坐标超界")
@@ -509,8 +531,12 @@ def create_app() -> Flask:
             return _err(400, "BAD_REQUEST", "completed_m 非法")
         tol_m = max(50.0, min(2000.0, tol_m))
         max_calls = max(1, min(8, max_calls))
+        min_forward_gain_m = max(0.0, min(100.0, min_forward_gain_m))
+        max_backtrack_m = max(0.0, min(200.0, max_backtrack_m))
+        max_initial_angle_deg = max(30.0, min(120.0, max_initial_angle_deg))
         g.log_extra = (f"along={along_m:.0f} target={target_m:.0f} "
-                       f"n={len(polyline)} origin={sanitize_origin(lng, lat)}")
+                       f"n={len(polyline)} forward={'Y' if forward_only else 'N'} "
+                       f"origin={sanitize_origin(lng, lat)}")
 
         t0 = time.time()
         try:
@@ -518,9 +544,20 @@ def create_app() -> Flask:
         except Exception:
             return _err(500, "NO_KEY", "服务端缺少高德 Key 配置")
         planner = AmapWalkingPlanner(key, sleep=0.15, timeout=20)
-        res = reroute_plan(planner, (lng, lat), polyline, along_m, target_m,
-                           completed_m, heading=heading, tol_m=tol_m,
-                           max_calls=max_calls)
+        res = reroute_plan(
+            planner, (lng, lat), polyline, along_m, target_m,
+            completed_m, heading=heading, tol_m=tol_m,
+            max_calls=max_calls, forward_only=forward_only,
+            heading_source=heading_source,
+            heading_confidence=(float(heading_confidence)
+                                if heading_confidence is not None else None),
+            heading_age_ms=(int(heading_age_ms)
+                            if heading_age_ms is not None else None),
+            recent_points=recent_points, route_end=route_end,
+            request_id=request_id, sent_at_ms=sent_at_ms,
+            min_forward_gain_m=min_forward_gain_m,
+            max_backtrack_m=max_backtrack_m,
+            max_initial_angle_deg=max_initial_angle_deg)
         # 熔断器反馈（与 generate 同语义：上游限流即计一次 throttle）
         if any(looks_throttled(c.error) for c in res.candidates):
             state.breaker.record_throttle()
@@ -540,6 +577,10 @@ def create_app() -> Flask:
                 "estimated_total_m": (round(c.estimated_total_m, 1)
                                       if c.estimated_total_m is not None else None),
                 "within_tolerance": c.within_tolerance,
+                "initial_angle_deg": c.initial_angle_deg,
+                "forward_gain_m": c.forward_gain_m,
+                "backtrack_m": c.backtrack_m,
+                "forward_ok": c.forward_ok,
                 "error": c.error,
             } for c in res.candidates]
 
@@ -552,6 +593,12 @@ def create_app() -> Flask:
                 "error_code": res.error_code,
                 "error": res.error,
                 "reroute_id": res.reroute_id,
+                "strategy": res.strategy,
+                "request_id": res.request_id,
+                "actual_along_m": res.actual_along_m,
+                "heading_used": res.heading_used,
+                "heading_source": res.heading_source,
+                "heading_confidence": res.heading_confidence,
                 "api_calls": res.api_calls,
                 "elapsed_s": round(time.time() - t0, 2),
                 "candidates_evaluated": _ser_cands(),
@@ -559,18 +606,39 @@ def create_app() -> Flask:
         return jsonify({
             "success": True,
             "reroute_id": res.reroute_id,
+            "strategy": res.strategy,
+            "request_id": res.request_id,
+            "actual_along_m": res.actual_along_m,
+            "heading_used": res.heading_used,
+            "heading_source": res.heading_source,
+            "heading_confidence": res.heading_confidence,
             "connector": {
                 "polyline": [[round(p[0], 6), round(p[1], 6)]
                              for p in _downsample(res.connector_points, 2)],
                 "distance_m": res.connector_m,
                 "duration_s": res.connector_duration_s,
                 "steps": res.connector_steps,
+                "initial_angle_deg": (res.chosen.initial_angle_deg
+                                      if res.chosen else None),
+                "forward_gain_m": (res.chosen.forward_gain_m
+                                   if res.chosen else None),
+                "backtrack_m": (res.chosen.backtrack_m
+                                if res.chosen else None),
+                "forward_ok": (res.chosen.forward_ok
+                               if res.chosen else None),
             },
             "rejoin": {
                 "lng": round(res.chosen.point[0], 6),
                 "lat": round(res.chosen.point[1], 6),
                 "along_m": round(res.chosen.along_m, 1),
                 "skipped_m": round(res.chosen.skipped_m, 1),
+                "actual_along_m": res.actual_along_m,
+                "forward_gain_m": (res.chosen.forward_gain_m
+                                   if res.chosen else None),
+                "backtrack_m": (res.chosen.backtrack_m
+                                if res.chosen else None),
+                "forward_ok": (res.chosen.forward_ok
+                               if res.chosen else None),
             },
             "merged_remaining_polyline": res.merged_remaining,
             "remaining_m": res.remaining_m,

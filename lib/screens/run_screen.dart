@@ -22,9 +22,11 @@ import '../services/nav/tts_diagnostics.dart';
 import '../services/nav/tts_service.dart';
 import '../services/nav/voice_log.dart';
 import '../services/route_api/reroute_api.dart';
+import '../services/route_api/route_api_service.dart' show RouteApiException;
 import '../services/run_recorder/run_recorder.dart';
 import '../utils/dual_track.dart';
 import '../utils/geo.dart' hide haversineMeters;
+import '../utils/heading_estimate.dart';
 import '../utils/map_icons.dart';
 import '../utils/route_path.dart';
 import '../utils/route_style.dart';
@@ -185,6 +187,10 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
 
   /// 已消费的定位点时间戳（同一 GPS 点绝不重复投票）。
   DateTime? _lastNavSampleAt;
+
+  /// 阶段 Q：最近一次可靠的实际移动方向（短暂停止/信号差时回退）。
+  double? _lastReliableHeading;
+  DateTime? _lastReliableHeadingAt;
 
   /// 在飞请求锁 + 请求 ID（5.7#5/#6：一次偏航事件只允许一个请求，
   /// 过期结果按 ID 丢弃）。
@@ -829,11 +835,55 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
 
     final TrackPoint last = pts.last;
     final double target = widget.targetM ?? _plannedPath?.total ?? 0;
+
+    // 阶段 Q：用最近可靠 GPS 轨迹估计真实移动方向；指南针/路线切线
+    // 只作为最后兜底，且明确标注来源与年龄。
+    final HeadingEstimate est = estimateRunHeading(
+      points: pts,
+      lastReliableHeading: _lastReliableHeading,
+      lastReliableAgeMs: _lastReliableHeadingAt == null
+          ? null
+          : now.difference(_lastReliableHeadingAt!).inMilliseconds,
+      now: now,
+    );
+    if (est.reliable && est.source != 'frozen' && est.heading != null) {
+      _lastReliableHeading = est.heading;
+      _lastReliableHeadingAt = now;
+    }
+    final List<TrackPoint> recent =
+        pts.length > 9 ? pts.sublist(pts.length - 9) : pts;
+    final List<List<double>> recentJson = recent
+        .map((TrackPoint p) => <double>[
+              p.longitude,
+              p.latitude,
+              p.accuracy,
+              p.speed,
+              p.timestamp.millisecondsSinceEpoch.toDouble(),
+            ])
+        .toList();
+    final List<double> routeEnd = path.points.length >= 2
+        ? <double>[path.points.last.longitude, path.points.last.latitude]
+        : <double>[last.longitude, last.latitude];
+    final double originalTotal = _plannedPath?.total ?? path.total;
+
     try {
       final ReroutePlan plan = await _rerouteClient.request(
         lng: last.longitude,
         lat: last.latitude,
-        headingDeg: _heading.heading,
+        headingDeg: est.heading,
+        headingSource: est.source,
+        headingConfidence: est.confidence,
+        headingAgeMs: est.ageMs,
+        speedMps: last.speed,
+        accuracyM: last.accuracy,
+        offsetM: _lastProj?.offsetM,
+        recentPoints: recentJson,
+        routeEnd: routeEnd,
+        originalTotalM: originalTotal,
+        forwardOnly: true,
+        requestId: 'req-$reqId',
+        sentAtMs: now.millisecondsSinceEpoch,
+        maxApiCalls: 6,
         polyline: path.points
             .map((LatLng p) => <double>[p.longitude, p.latitude])
             .toList(),
@@ -848,6 +898,13 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
             detail: '请求返回时已回到原路线，丢弃结果 ${plan.rerouteId}');
         return;
       }
+      // 客户端第二道防线：首段明显掉头/回退的结果绝不接入。
+      if (!plan.forwardAcceptable) {
+        throw RouteApiException(
+          '前方路线需要先掉头/回退，已拒绝应用',
+          code: 'NO_FORWARD_REJOIN',
+        );
+      }
       _navState.rerouteSucceeded(); // rerouting → rerouted
       _applyReroute(plan); // 原子接入 → acceptNewRoute() → onRoute
     } catch (e) {
@@ -856,15 +913,38 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
       _rerouteCooldownUntil = DateTime.now().add(_rerouteCooldown);
       VoiceLog.instance.log(VoiceLogKind.error, 'reroute',
           detail: '重规划失败: $e');
-      // 5.7#9：断网/后端不可用——语音如实提示，运动继续记录，绝不结束
-      unawaited(_tts.speak('暂时无法重新规划路线，将继续记录本次运动', flush: true));
-      // 冷却期后自动再试一次（受自动次数上限约束）；手动按钮始终可用
+      final String code =
+          (e is RouteApiException ? e.code : null) ?? '';
+      final String msg = (e is RouteApiException &&
+              (code.startsWith('NO_FORWARD') ||
+                  code == 'REMAINING_DISTANCE_INFEASIBLE' ||
+                  code == 'HEADING_UNRELIABLE' ||
+                  code == 'STALE_REQUEST' ||
+                  code == 'ROUTE_ASSEMBLY_ERROR' ||
+                  code == 'AMAP_ERROR'))
+          ? e.message
+          : '暂时无法重新规划路线，将继续记录本次运动';
+      // 5.7#9：失败只提示，运动继续记录，绝不结束、绝不静默掉头。
+      _rerouteWarning = msg;
+      unawaited(_tts.speak(msg, flush: true));
+      final bool retryable = code.isEmpty ||
+          code == 'NETWORK' ||
+          code == 'HTTP' ||
+          code == 'RATE_LIMITED' ||
+          code == 'UPSTREAM_QUOTA' ||
+          code == 'AMAP_ERROR' ||
+          code == 'HEADING_UNRELIABLE' ||
+          code == 'STALE_REQUEST' ||
+          code == 'REROUTE_FAILED';
       _rerouteRetryTimer?.cancel();
-      _rerouteRetryTimer = Timer(_rerouteCooldown, () {
-        if (mounted && _navState.status == NavStatus.rerouteFailed) {
-          _tryReroute(auto: true);
-        }
-      });
+      if (retryable) {
+        // 冷却期后自动再试一次（受自动次数上限约束）；手动按钮始终可用。
+        _rerouteRetryTimer = Timer(_rerouteCooldown, () {
+          if (mounted && _navState.status == NavStatus.rerouteFailed) {
+            _tryReroute(auto: true);
+          }
+        });
+      }
       if (mounted) setState(() {});
     } finally {
       if (reqId == _rerouteReqId) _rerouteInFlight = false;
@@ -906,16 +986,23 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
       if (plan.withinTolerance) {
         _rerouteWarning = null;
       } else {
-        // 5.5：超出目标容差时如实展示新预计总里程，绝不伪装达标
-        final double overKm = (plan.estimatedTotalM - plan.targetM) / 1000;
+        // 5.5：超出容差时如实展示新预计总里程（可能长也可能短），绝不伪装达标
+        final double diffKm = (plan.estimatedTotalM - plan.targetM) / 1000;
+        final String relation = diffKm >= 0
+            ? '比原目标多 ${diffKm.toStringAsFixed(1)} 公里'
+            : '比原目标少 ${diffKm.abs().toStringAsFixed(1)} 公里';
         _rerouteWarning = '新路线预计总里程 '
             '${(plan.estimatedTotalM / 1000).toStringAsFixed(1)} 公里'
-            '（比原目标多 ${overKm.toStringAsFixed(1)} 公里）';
+            '（$relation）';
       }
     });
     VoiceLog.instance.log(VoiceLogKind.system, 'reroute',
-        detail: '接入新路线 ${plan.rerouteId}: 连接段=${plan.connectorM.round()}m '
+        detail: '接入新路线 ${plan.rerouteId}: strategy=${plan.strategy} '
+            'actual=${plan.actualAlongM.round()}m '
+            '连接段=${plan.connectorM.round()}m '
             '接回点@${plan.rejoinAlongM.round()}m 跳过=${plan.skippedM.round()}m '
+            '首段夹角=${plan.connectorInitialAngleDeg?.toStringAsFixed(1)}° '
+            '回退=${plan.connectorBacktrackM?.toStringAsFixed(1)}m '
             '新剩余=${plan.remainingM.round()}m 预计总=${plan.estimatedTotalM.round()}m '
             'within=${plan.withinTolerance} api=${plan.apiCalls} '
             '耗时=${plan.elapsedS}s');
@@ -924,7 +1011,9 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
       _activeTurns,
       announcement: plan.withinTolerance
           ? '路线已经重新规划，请沿当前道路继续前进'
-          : '路线已经重新规划，新路线比原目标略长，请沿当前道路继续前进',
+          : (plan.estimatedTotalM >= plan.targetM
+              ? '路线已经重新规划，新路线比原目标略长，请沿当前道路继续前进'
+              : '路线已经重新规划，新路线比原目标略短，请沿当前道路继续前进'),
     );
     _navState.acceptNewRoute(); // rerouted → onRoute（接入完成）
   }
@@ -933,7 +1022,12 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
   /// 路段），其余平移 `connectorM - rejoinAlongM`。连接段 steps 在前。
   List<RouteStep> _rebaseSteps(ReroutePlan plan) {
     final List<RouteStep> out = List<RouteStep>.of(plan.connectorSteps);
+    // 前向替代路线（forward_loop）的连接段本身已到终点；不要再追加旧的
+    // end 步骤，避免重复“已到达路线终点”和重复保存语义。
+    final bool connectorHasEnd =
+        out.any((RouteStep s) => s.action == 'end');
     for (final RouteStep s in _activeSteps) {
+      if (connectorHasEnd && s.action == 'end') continue;
       if (s.cumulativeM < plan.rejoinAlongM - 1) continue;
       out.add(RouteStep(
         instruction: s.instruction,

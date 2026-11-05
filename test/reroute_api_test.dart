@@ -122,6 +122,114 @@ void main() {
       expect(plan.withinTolerance, isTrue);
       expect(plan.apiCalls, 3);
       expect(plan.elapsedS, 1.2);
+      // 旧响应没有前向字段 → 默认 legacy，不误判
+      expect(plan.strategy, 'legacy');
+      expect(plan.isForward, isFalse);
+      expect(plan.forwardAcceptable, isTrue);
+    });
+
+    test('阶段 Q：前向请求体与响应字段完整解析', () async {
+      Map<String, dynamic>? sentBody;
+      final int nowMs = DateTime.now().millisecondsSinceEpoch;
+      final Map<String, dynamic> forwardBody = <String, dynamic>{
+        ...okBody,
+        'strategy': 'forward_rejoin',
+        'request_id': 'req-7',
+        'actual_along_m': 420.0,
+        'heading_used': 88.0,
+        'heading_source': 'recent_points',
+        'heading_confidence': 0.9,
+        'connector': <String, dynamic>{
+          ...(okBody['connector'] as Map<String, dynamic>),
+          'initial_angle_deg': 12.5,
+          'forward_gain_m': 48.0,
+          'backtrack_m': 0.0,
+          'forward_ok': true,
+        },
+        'rejoin': <String, dynamic>{
+          ...(okBody['rejoin'] as Map<String, dynamic>),
+          'actual_along_m': 420.0,
+          'forward_gain_m': 48.0,
+          'backtrack_m': 0.0,
+          'forward_ok': true,
+        },
+      };
+      final RerouteClient c = svcWith((http.Request req) {
+        sentBody = jsonDecode(req.body) as Map<String, dynamic>;
+        return jsonResponse(jsonEncode(forwardBody), 200);
+      });
+      final ReroutePlan plan = await c.request(
+        lng: 116.0035,
+        lat: 39.9006,
+        polyline: <List<double>>[
+          <double>[116.0, 39.9],
+          <double>[116.01, 39.9],
+        ],
+        alongM: 300,
+        targetM: 1500,
+        completedM: 300,
+        headingDeg: 88,
+        headingSource: 'recent_points',
+        headingConfidence: 0.9,
+        headingAgeMs: 120,
+        speedMps: 3.1,
+        accuracyM: 6,
+        offsetM: 65,
+        recentPoints: <List<double>>[
+          <double>[116.0040, 39.9006, 6, 3.1, (nowMs - 4000).toDouble()],
+          <double>[116.0045, 39.9006, 6, 3.1, nowMs.toDouble()],
+        ],
+        routeEnd: <double>[116.01, 39.9],
+        originalTotalM: 938,
+        forwardOnly: true,
+        requestId: 'req-7',
+        sentAtMs: nowMs,
+        maxApiCalls: 6,
+      );
+      expect(sentBody!['forward_only'], isTrue);
+      expect(sentBody!['heading_source'], 'recent_points');
+      expect(sentBody!['heading_confidence'], 0.9);
+      expect(sentBody!['heading_age_ms'], 120);
+      expect(sentBody!['speed_mps'], 3.1);
+      expect(sentBody!['accuracy_m'], 6);
+      expect(sentBody!['offset_m'], 65);
+      expect((sentBody!['recent_points'] as List<dynamic>).length, 2);
+      expect(sentBody!['route_end'], <double>[116.01, 39.9]);
+      expect(sentBody!['original_total_m'], 938);
+      expect(sentBody!['request_id'], 'req-7');
+      expect(sentBody!['max_api_calls'], 6);
+      expect(plan.strategy, 'forward_rejoin');
+      expect(plan.isForward, isTrue);
+      expect(plan.requestId, 'req-7');
+      expect(plan.actualAlongM, 420);
+      expect(plan.headingSource, 'recent_points');
+      expect(plan.headingConfidence, 0.9);
+      expect(plan.connectorInitialAngleDeg, 12.5);
+      expect(plan.connectorForwardGainM, 48);
+      expect(plan.connectorBacktrackM, 0);
+      expect(plan.connectorForwardOk, isTrue);
+      expect(plan.rejoinForwardOk, isTrue);
+      expect(plan.forwardAcceptable, isTrue);
+    });
+
+    test('阶段 Q：首段明显掉头/回退 → 客户端拒绝应用', () {
+      final Map<String, dynamic> bad = <String, dynamic>{
+        ...okBody,
+        'strategy': 'forward_rejoin',
+        'connector': <String, dynamic>{
+          ...(okBody['connector'] as Map<String, dynamic>),
+          'initial_angle_deg': 150.0,
+          'backtrack_m': 40.0,
+          'forward_ok': false,
+        },
+        'rejoin': <String, dynamic>{
+          ...(okBody['rejoin'] as Map<String, dynamic>),
+          'forward_ok': false,
+        },
+      };
+      final ReroutePlan plan = ReroutePlan.fromJson(bad);
+      expect(plan.isForward, isTrue);
+      expect(plan.forwardAcceptable, isFalse);
     });
   });
 

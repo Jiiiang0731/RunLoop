@@ -28,6 +28,20 @@ class ReroutePlan {
     required this.tolM,
     required this.apiCalls,
     required this.elapsedS,
+    this.strategy = 'legacy',
+    this.requestId = '',
+    this.actualAlongM = 0,
+    this.headingUsed,
+    this.headingSource = 'none',
+    this.headingConfidence = 0,
+    this.connectorInitialAngleDeg,
+    this.connectorForwardGainM,
+    this.connectorBacktrackM,
+    this.connectorForwardOk,
+    this.rejoinActualAlongM = 0,
+    this.rejoinForwardGainM,
+    this.rejoinBacktrackM,
+    this.rejoinForwardOk,
   });
 
   /// 本次偏航事件的请求/结果标识（与客户端请求锁配合，防过期结果接入）。
@@ -63,6 +77,48 @@ class ReroutePlan {
   final int apiCalls;
   final double elapsedS;
 
+  // ---- 阶段 Q：前向重规划上下文 ----
+  /// legacy / forward_rejoin / forward_loop。
+  final String strategy;
+  final String requestId;
+
+  /// 服务端用当前 GPS 投影得到的真实原路线进度（不是客户端旧 along）。
+  final double actualAlongM;
+  final double? headingUsed;
+  final String headingSource;
+  final double headingConfidence;
+
+  /// 连接段首段与当前方向的夹角（度）。
+  final double? connectorInitialAngleDeg;
+
+  /// 连接段前 80m 的前进增益（米，越大越向前）。
+  final double? connectorForwardGainM;
+
+  /// 连接段前 80m 的最大回退距离（米）。
+  final double? connectorBacktrackM;
+  final bool? connectorForwardOk;
+
+  final double rejoinActualAlongM;
+  final double? rejoinForwardGainM;
+  final double? rejoinBacktrackM;
+  final bool? rejoinForwardOk;
+
+  bool get isForward => strategy.startsWith('forward');
+
+  /// 客户端第二道防线：即使服务端返回成功，首段明显掉头/回退也拒绝应用。
+  bool get forwardAcceptable {
+    if (!isForward) return true;
+    if (connectorForwardOk == false || rejoinForwardOk == false) return false;
+    if (connectorInitialAngleDeg != null &&
+        connectorInitialAngleDeg! > 90.0) {
+      return false;
+    }
+    if (connectorBacktrackM != null && connectorBacktrackM! > 25.0) {
+      return false;
+    }
+    return true;
+  }
+
   factory ReroutePlan.fromJson(Map<String, dynamic> j) {
     final Map<String, dynamic> conn =
         (j['connector'] as Map<String, dynamic>?) ?? <String, dynamic>{};
@@ -93,6 +149,27 @@ class ReroutePlan {
       tolM: (j['tol_m'] as num?)?.toDouble() ?? 500,
       apiCalls: (j['api_calls'] as num?)?.toInt() ?? 0,
       elapsedS: (j['elapsed_s'] as num?)?.toDouble() ?? 0,
+      strategy: j['strategy'] as String? ?? 'legacy',
+      requestId: j['request_id'] as String? ?? '',
+      actualAlongM: (j['actual_along_m'] as num?)?.toDouble() ??
+          (rejoin['actual_along_m'] as num?)?.toDouble() ??
+          0,
+      headingUsed: (j['heading_used'] as num?)?.toDouble(),
+      headingSource: j['heading_source'] as String? ?? 'none',
+      headingConfidence:
+          (j['heading_confidence'] as num?)?.toDouble() ?? 0,
+      connectorInitialAngleDeg:
+          (conn['initial_angle_deg'] as num?)?.toDouble(),
+      connectorForwardGainM:
+          (conn['forward_gain_m'] as num?)?.toDouble(),
+      connectorBacktrackM: (conn['backtrack_m'] as num?)?.toDouble(),
+      connectorForwardOk: conn['forward_ok'] as bool?,
+      rejoinActualAlongM:
+          (rejoin['actual_along_m'] as num?)?.toDouble() ?? 0,
+      rejoinForwardGainM:
+          (rejoin['forward_gain_m'] as num?)?.toDouble(),
+      rejoinBacktrackM: (rejoin['backtrack_m'] as num?)?.toDouble(),
+      rejoinForwardOk: rejoin['forward_ok'] as bool?,
     );
   }
 }
@@ -124,6 +201,22 @@ class RerouteClient {
     double? headingDeg,
     double tolM = 500,
     int maxApiCalls = 5,
+    // ---- 阶段 Q：前向重规划上下文（全部可选，旧调用完全兼容） ----
+    bool forwardOnly = false,
+    String? headingSource,
+    double? headingConfidence,
+    int? headingAgeMs,
+    double? speedMps,
+    double? accuracyM,
+    double? offsetM,
+    List<List<double>>? recentPoints,
+    List<double>? routeEnd,
+    double? originalTotalM,
+    String? requestId,
+    int? sentAtMs,
+    double minForwardGainM = 10,
+    double maxBacktrackM = 25,
+    double maxInitialAngleDeg = 90,
   }) async {
     if (baseUrl.isEmpty) {
       throw RouteApiException('未配置服务器地址，无法重新规划路线',
@@ -154,6 +247,21 @@ class RerouteClient {
               'heading': ?headingDeg,
               'tol_m': tolM,
               'max_api_calls': maxApiCalls,
+              if (forwardOnly) 'forward_only': true,
+              'heading_source': ?headingSource,
+              'heading_confidence': ?headingConfidence,
+              'heading_age_ms': ?headingAgeMs,
+              'speed_mps': ?speedMps,
+              'accuracy_m': ?accuracyM,
+              'offset_m': ?offsetM,
+              'recent_points': ?recentPoints,
+              'route_end': ?routeEnd,
+              'original_total_m': ?originalTotalM,
+              'request_id': ?requestId,
+              'sent_at_ms': ?sentAtMs,
+              'min_forward_gain_m': minForwardGainM,
+              'max_backtrack_m': maxBacktrackM,
+              'max_initial_angle_deg': maxInitialAngleDeg,
             }),
           )
           .timeout(requestTimeout);

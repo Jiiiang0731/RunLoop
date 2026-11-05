@@ -2,9 +2,12 @@
 # -*- coding: utf-8 -*-
 """路径规划器接口 + 高德真实实现 + 确定性 Mock（供单元测试）。"""
 import json
+import os
+import threading
 import time
 import urllib.parse
 import urllib.request
+from collections import OrderedDict
 from typing import List
 
 from .geo import GeoPoint, haversine
@@ -21,6 +24,123 @@ _THROTTLE_CODES = {
     "10023",  # QPS_HAS_EXCEEDED_THE_LIMIT_2
     "10044",  # 海外请求 QPS 超限
 }
+
+
+class _SharedPathCache:
+    """阶段 Q：进程级成功步行路径缓存（TTL + LRU + in-flight 合并）。
+
+    - 键：起终点经纬度各自保留 6 位小数（≈0.11m），方向敏感——绝不假设
+      A→B 与 B→A 相同；
+    - 只缓存 error is None 的成功结果；失败请求绝不入缓存；
+    - 默认 TTL 600s、最多 2048 条；可用环境变量覆盖；
+    - 同时只允许一个线程真正请求同一个键，其余等待并复用结果。
+    """
+
+    def __init__(self, ttl_s: float = 600.0, maxsize: int = 2048):
+        self.ttl = max(10.0, ttl_s)
+        self.maxsize = max(64, maxsize)
+        self._lock = threading.Lock()
+        self._data = OrderedDict()  # key -> (expire_at, PlanResult)
+        self._inflight = {}         # key -> threading.Event
+        self.hits = 0
+        self.misses = 0
+        self.evictions = 0
+        self.waits = 0
+
+    def get(self, key):
+        now = time.monotonic()
+        with self._lock:
+            item = self._data.get(key)
+            if item is not None:
+                if item[0] > now:
+                    self._data.move_to_end(key)
+                    self.hits += 1
+                    return item[1]
+                self._data.pop(key, None)
+            self.misses += 1
+            return None
+
+    def put(self, key, value):
+        with self._lock:
+            self._data[key] = (time.monotonic() + self.ttl, value)
+            self._data.move_to_end(key)
+            while len(self._data) > self.maxsize:
+                self._data.popitem(last=False)
+                self.evictions += 1
+
+    def begin(self, key):
+        """返回 (is_owner, event)。非 owner 应等待 event 后重查缓存。"""
+        with self._lock:
+            ev = self._inflight.get(key)
+            if ev is not None:
+                self.waits += 1
+                return False, ev
+            ev = threading.Event()
+            self._inflight[key] = ev
+            return True, ev
+
+    def end(self, key, event):
+        with self._lock:
+            if self._inflight.get(key) is event:
+                self._inflight.pop(key, None)
+        event.set()
+
+    def stats(self):
+        with self._lock:
+            return {
+                "hits": self.hits, "misses": self.misses,
+                "evictions": self.evictions, "waits": self.waits,
+                "size": len(self._data), "ttl_s": self.ttl,
+                "maxsize": self.maxsize,
+            }
+
+    def clear(self):
+        with self._lock:
+            self._data.clear()
+            self._inflight.clear()
+
+
+class _TokenBucket:
+    """全局 QPS 令牌桶（默认 3/s，稳妥低于当前实测触发 10021 的速率）。
+
+    高德个人 Key 的 QPS 是全局稀缺资源；服务端并发闸 2 个请求共享此桶。
+    只控制“HTTP 尝试”的启动速率，不控制重试退避。
+    """
+
+    def __init__(self, rate: float = 3.0, capacity: float = 1.0):
+        self.rate = max(0.5, float(rate))
+        self.capacity = max(1.0, float(capacity))
+        self.tokens = self.capacity
+        self.last = time.monotonic()
+        self._lock = threading.Lock()
+
+    def acquire(self):
+        while True:
+            with self._lock:
+                now = time.monotonic()
+                self.tokens = min(self.capacity,
+                                  self.tokens + (now - self.last) * self.rate)
+                self.last = now
+                if self.tokens >= 1.0:
+                    self.tokens -= 1.0
+                    return
+                wait = (1.0 - self.tokens) / self.rate
+            time.sleep(min(max(wait, 0.005), 0.5))
+
+
+_WALK_CACHE = _SharedPathCache(
+    ttl_s=float(os.environ.get("RUNLOOP_WALK_CACHE_TTL_S", "600")),
+    maxsize=int(os.environ.get("RUNLOOP_WALK_CACHE_SIZE", "2048")),
+)
+_AMAP_QPS = _TokenBucket(
+    rate=float(os.environ.get("RUNLOOP_AMAP_QPS", "3.0")),
+    capacity=1.0,
+)
+
+
+def walk_cache_stats():
+    """供健康检查/诊断页观察缓存效果（不含坐标与密钥）。"""
+    return _WALK_CACHE.stats()
 
 
 def _to_num(v) -> float:
@@ -119,11 +239,44 @@ class AmapWalkingPlanner(MapPlanner):
         return self._http_calls < max_calls
 
     def plan_walking(self, origin: GeoPoint, dest: GeoPoint) -> PlanResult:
+        """带进程级成功缓存 + in-flight 合并的步行规划入口。"""
         ck = (round(origin[0], 6), round(origin[1], 6),
               round(dest[0], 6), round(dest[1], 6))
         if ck in self._cache:
             return self._cache[ck]
+        cached = _WALK_CACHE.get(ck)
+        if cached is not None:
+            self._cache[ck] = cached
+            return cached
 
+        owner, ev = _WALK_CACHE.begin(ck)
+        if not owner:
+            # 同键请求已在飞：等它完成，直接复用成功结果（失败不入缓存）。
+            ev.wait(timeout=max(5.0, self.timeout * (self.retries + 1) + 5.0))
+            cached = _WALK_CACHE.get(ck)
+            if cached is not None:
+                self._cache[ck] = cached
+                return cached
+            # 前一个失败：自己再抢一次 owner；抢不到就直接请求一次。
+            owner, ev = _WALK_CACHE.begin(ck)
+            if not owner:
+                cached = _WALK_CACHE.get(ck)
+                if cached is not None:
+                    self._cache[ck] = cached
+                    return cached
+
+        try:
+            result = self._plan_walking_http(origin, dest, ck)
+            if result.error is None:
+                _WALK_CACHE.put(ck, result)
+                self._cache[ck] = result
+            return result
+        finally:
+            if owner:
+                _WALK_CACHE.end(ck, ev)
+
+    def _plan_walking_http(self, origin: GeoPoint, dest: GeoPoint,
+                           ck) -> PlanResult:
         o = f"{origin[0]:.6f},{origin[1]:.6f}"
         d = f"{dest[0]:.6f},{dest[1]:.6f}"
         q = urllib.parse.urlencode({"origin": o, "destination": d, "key": self.key})
@@ -131,6 +284,9 @@ class AmapWalkingPlanner(MapPlanner):
         last = "unknown"
         result: PlanResult
         for attempt in range(self.retries + 1):
+            # 阶段 Q：全局令牌桶控制 QPS（含重试）；默认 3/s，低于实测触发
+            # 10021 的速率。固定 per-segment sleep 由 server 默认改为 0。
+            _AMAP_QPS.acquire()
             self._http_calls += 1
             # 指数退避：0.25s → 0.5s → 1s（QPS 限流/瞬时故障恢复实测有效）
             backoff = self.sleep * (2 ** attempt)
@@ -182,6 +338,7 @@ class AmapWalkingPlanner(MapPlanner):
         url = f"{self.base}/v5/direction/driving?{q}"
         last = "unknown"
         for attempt in range(self.retries + 1):
+            _AMAP_QPS.acquire()
             self._http_calls += 1
             backoff = self.sleep * (2 ** attempt)
             try:

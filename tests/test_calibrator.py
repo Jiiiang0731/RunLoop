@@ -111,7 +111,7 @@ class TestCalibrate(unittest.TestCase):
         """Mock 直线网络里首个变体（lean_ell）达标即高质量（0 转弯）→ 提前终止。"""
         cr = calibrate(MockPlanner(factor=1.4), self.center, 10000, 8, 5,
                        tol_m=500, max_iters=8, detour_factor=1.4)
-        labels = {h.get("variant") for h in cr.history}
+        labels = {h.get("variant") for h in cr.history if h.get("variant")}
         self.assertEqual(labels, {"lean_ell"})
 
     def test_prefers_higher_quality_variant(self):
@@ -126,7 +126,7 @@ class TestCalibrate(unittest.TestCase):
                        self.center, 10000, 8, 5,
                        tol_m=500, max_iters=8, detour_factor=1.4)
         self.assertIsNotNone(cr.loop)
-        labels = {h.get("variant") for h in cr.history}
+        labels = {h.get("variant") for h in cr.history if h.get("variant")}
         self.assertIn(first_variant.label, labels)
         self.assertGreater(len(labels), 1)  # 低分未提前终止，尝试了后续变体
         # 最优闭环应来自低转弯的后续变体（首个变体被塞了 45+ 次左转；

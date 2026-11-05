@@ -97,7 +97,12 @@ class TestCalibrateSpurIntegration(unittest.TestCase):
                        variants=[_variant()], fix_detours=False)
         self.assertIsNotNone(cr.loop)
         self.assertLessEqual(abs(cr.loop.distance_m - 3000), 500)
-        events = [h.get("event") for h in cr.history if "event" in h]
+        # 只断言“修复类”事件为空；refine_early_stop 是阶段 Q 的搜索诊断。
+        events = [h.get("event") for h in cr.history
+                  if h.get("event") and (
+                      h["event"].startswith("spur") or
+                      h["event"].startswith("partial") or
+                      h["event"].startswith("recal"))]
         self.assertEqual(events, [])
         # 两处真实折返绕行仍在（V 形单点巧合已被并拢度过滤，不会误报）
         self.assertEqual(len(find_spur_intervals(cr.loop.polyline)), 2)
