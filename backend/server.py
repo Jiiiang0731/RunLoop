@@ -16,8 +16,9 @@ RunLoop 路线规划后端 API（Flask，阶段 K 生产化）。
     局域网调试（显式）：          RUNLOOP_HOST=0.0.0.0 python backend/server.py
 
 接口：
-    GET  /api/health          健康检查（v0.5：env/uptime/熔断状态）
+    GET  /api/health          健康检查（v0.6：env/uptime/熔断状态）
     POST /api/route/generate  闭环路线生成（支持 fix_detours 绕行修复）
+    POST /api/route/reroute   动态重规划（偏航后接回原路线，阶段 M-D）
     POST /api/route/pois      沿途 POI 地标
 """
 import json
@@ -40,6 +41,7 @@ from backend.guard import (  # noqa: E402
     CircuitBreaker, ConcurrencyGate, RateLimiter, THROTTLE_CODES,
     hash_device, looks_throttled, sanitize_origin,
 )
+from backend.reroute import reroute as reroute_plan  # noqa: E402
 from backend.route_generator import (  # noqa: E402
     AmapWalkingPlanner,
     GenerateOptions,
@@ -50,7 +52,7 @@ from backend.route_generator.overlap import detect_overlaps  # noqa: E402
 from backend.route_generator.sampling import sample_points_by_distance  # noqa: E402
 
 KEY_FILE = os.path.join(ROOT, "config", "amap_key.local")
-SERVICE_VERSION = "0.5"
+SERVICE_VERSION = "0.6"
 MAX_BODY_BYTES = 256 * 1024
 MAX_API_CALLS_CLAMP = 1500      # 决策#2：质量优先，预算上限放宽（原 1200）
 DEFAULT_MAX_API_CALLS = 800
@@ -293,6 +295,10 @@ def create_app() -> Flask:
                 "generate": {"max_api_calls": DEFAULT_MAX_API_CALLS,
                              "sleep_s": 0.05},
                 "pois": {"interval_m": 1000, "radius": 500, "limit": 3},
+                # 动态重规划调优项（阶段 M-D；客户端可下发覆盖检测参数）
+                "reroute": {"tol_m": 500, "max_api_calls": 5,
+                            "timeout_s": 20, "cooldown_s": 30,
+                            "max_auto_retries": 2},
             },
         })
 
@@ -388,6 +394,127 @@ def create_app() -> Flask:
             "elapsed_s": round(time.time() - t0, 1),
             "stage_times": result.stage_times,
             "candidates": candidates,
+        })
+
+    @app.route("/api/route/reroute", methods=["POST"])
+    def reroute_ep():
+        """动态重规划（阶段 M-D，任务书 5.4/5.5/5.6）。
+
+        当前真实位置 → 高德真实步行规划到候选接回点 → 合并原路线剩余部分。
+        候选接回点只从剩余路线采样（结构上不可能接回历史路段）。
+
+        body: {
+          origin: {lng, lat},            # 当前位置（GCJ-02，已由客户端转换）
+          polyline: [[lng,lat],...],     # 原规划完整路线
+          along_m: float,                # 当前已确认的沿线进度
+          target_m: float, completed_m: float,
+          heading?: float,               # 当前航向（度，用于候选排序）
+          tol_m?: 500, max_api_calls?: 5
+        }
+        返回：connector（折线/距离/时长/真实 steps）、rejoin 点、
+        merged_remaining_polyline、remaining_m、estimated_total_m、
+        within_tolerance（诚实口径）、candidates_evaluated、api_calls、
+        elapsed_s。失败：success=false + error_code
+        （BAD_REQUEST / NO_REJOIN / AMAP_ERROR）。
+        """
+        try:
+            body = request.get_json(force=True, silent=True) or {}
+            origin = body.get("origin") or {}
+            lng, lat = float(origin.get("lng")), float(origin.get("lat"))
+            poly_raw = body.get("polyline") or []
+            along_m = float(body.get("along_m", -1))
+            target_m = float(body.get("target_m", 0))
+            completed_m = float(body.get("completed_m", 0))
+            heading_raw = body.get("heading")
+            heading = float(heading_raw) if heading_raw is not None else None
+            tol_m = float(body.get("tol_m", 500))
+            max_calls = int(body.get("max_api_calls", 5))
+        except (TypeError, ValueError):
+            return _err(400, "BAD_REQUEST", "参数格式错误")
+        if not (-180 <= lng <= 180 and -90 <= lat <= 90):
+            return _err(400, "BAD_REQUEST", "origin 坐标超界")
+        if not (2 <= len(poly_raw) <= 4000):
+            return _err(400, "BAD_REQUEST", "polyline 需要 2~4000 个点")
+        try:
+            polyline = [(float(p[0]), float(p[1])) for p in poly_raw]
+        except (TypeError, ValueError, IndexError):
+            return _err(400, "BAD_REQUEST", "polyline 格式错误")
+        if not (0 <= completed_m):
+            return _err(400, "BAD_REQUEST", "completed_m 非法")
+        tol_m = max(50.0, min(2000.0, tol_m))
+        max_calls = max(1, min(8, max_calls))
+        g.log_extra = (f"along={along_m:.0f} target={target_m:.0f} "
+                       f"n={len(polyline)} origin={sanitize_origin(lng, lat)}")
+
+        t0 = time.time()
+        try:
+            key = load_key()
+        except Exception:
+            return _err(500, "NO_KEY", "服务端缺少高德 Key 配置")
+        planner = AmapWalkingPlanner(key, sleep=0.15, timeout=20)
+        res = reroute_plan(planner, (lng, lat), polyline, along_m, target_m,
+                           completed_m, heading=heading, tol_m=tol_m,
+                           max_calls=max_calls)
+        # 熔断器反馈（与 generate 同语义：上游限流即计一次 throttle）
+        if any(looks_throttled(c.error) for c in res.candidates):
+            state.breaker.record_throttle()
+        elif res.api_calls:
+            state.breaker.record_success()
+
+        def _ser_cands():
+            return [{
+                "along_m": round(c.along_m, 1),
+                "lng": round(c.point[0], 6), "lat": round(c.point[1], 6),
+                "ok": c.ok,
+                "connector_m": round(c.connector_m, 1) if c.connector_m is not None else None,
+                "skipped_m": round(c.skipped_m, 1),
+                "extra_m": round(c.extra_m, 1) if c.extra_m is not None else None,
+                "turns": c.turns,
+                "score": round(c.score, 1) if c.score is not None else None,
+                "estimated_total_m": (round(c.estimated_total_m, 1)
+                                      if c.estimated_total_m is not None else None),
+                "within_tolerance": c.within_tolerance,
+                "error": c.error,
+            } for c in res.candidates]
+
+        if not res.ok:
+            app.logger.warning("reroute %s failed: %s (%s) calls=%d",
+                               res.reroute_id, res.error_code, res.error,
+                               res.api_calls)
+            return jsonify({
+                "success": False,
+                "error_code": res.error_code,
+                "error": res.error,
+                "reroute_id": res.reroute_id,
+                "api_calls": res.api_calls,
+                "elapsed_s": round(time.time() - t0, 2),
+                "candidates_evaluated": _ser_cands(),
+            }), 200
+        return jsonify({
+            "success": True,
+            "reroute_id": res.reroute_id,
+            "connector": {
+                "polyline": [[round(p[0], 6), round(p[1], 6)]
+                             for p in _downsample(res.connector_points, 2)],
+                "distance_m": res.connector_m,
+                "duration_s": res.connector_duration_s,
+                "steps": res.connector_steps,
+            },
+            "rejoin": {
+                "lng": round(res.chosen.point[0], 6),
+                "lat": round(res.chosen.point[1], 6),
+                "along_m": round(res.chosen.along_m, 1),
+                "skipped_m": round(res.chosen.skipped_m, 1),
+            },
+            "merged_remaining_polyline": res.merged_remaining,
+            "remaining_m": res.remaining_m,
+            "estimated_total_m": res.estimated_total_m,
+            "target_m": target_m,
+            "tol_m": tol_m,
+            "within_tolerance": res.within_tolerance,
+            "candidates_evaluated": _ser_cands(),
+            "api_calls": res.api_calls,
+            "elapsed_s": round(time.time() - t0, 2),
         })
 
     @app.route("/api/route/pois", methods=["POST"])

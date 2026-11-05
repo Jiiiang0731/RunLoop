@@ -28,6 +28,9 @@ DEFAULT_RULES: Dict[str, List[Tuple[int, int]]] = {
     "/api/route/generate": [(600, 8), (86400, 80)],
     # POI 查询每次 ~18 个高德调用，但结果有 1h 服务端缓存
     "/api/route/pois": [(3600, 30)],
+    # 动态重规划（阶段 M-D）：单次 ≤8 个高德调用；跑步中偏航触发，
+    # 允许比 generate 频繁，但设分钟级+日级双窗口防失控重试（任务书 5.7）
+    "/api/route/reroute": [(60, 6), (86400, 300)],
 }
 
 
@@ -146,6 +149,7 @@ class ConcurrencyGate:
         self.limits = limits if limits is not None else {
             "/api/route/generate": 2,
             "/api/route/pois": 4,
+            "/api/route/reroute": 2,
         }
         self.wait_s = wait_s
         self._sems: Dict[str, threading.Semaphore] = {

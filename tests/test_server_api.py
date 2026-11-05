@@ -52,7 +52,7 @@ class TestHealth(ServerApiBase):
         j = r.get_json()
         self.assertEqual(j["status"], "ok")
         self.assertEqual(j["service"], "runloop-route-api")
-        self.assertEqual(j["version"], "0.5")
+        self.assertEqual(j["version"], "0.6")
         self.assertEqual(j["env"], "production")   # RUNLOOP_ENV 未设 → 生产
         self.assertEqual(j["breaker"], "closed")
         self.assertIn("uptime_s", j)
@@ -70,10 +70,11 @@ class TestHealth(ServerApiBase):
         j = r.get_json()
         self.assertTrue(j["success"])
         cfg = j["config"]
-        self.assertEqual(cfg["service_version"], "0.5")
+        self.assertEqual(cfg["service_version"], "0.6")
         self.assertEqual(cfg["announcement"], "")
         self.assertEqual(cfg["generate"]["max_api_calls"], 800)
         self.assertEqual(cfg["pois"]["radius"], 500)
+        self.assertEqual(cfg["reroute"]["tol_m"], 500)
         self.assertNotIn("TEST-SECRET", r.get_data(as_text=True))
 
 
