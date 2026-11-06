@@ -598,6 +598,7 @@ Android 要求 Release APK 使用稳定签名；高德 Android Key 也绑定了�
 ### 联系方式
 
 GitHub: https://github.com/Jiiiang0731
+邮箱 : jiangqinru0731@outlook.com / 1158602961@qq.com
 
 ---
 
