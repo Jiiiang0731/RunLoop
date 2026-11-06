@@ -4,16 +4,23 @@
 !.env.example
 config/*.local
 config/*.key
+config/amap_key.local
 *.key
 *.pem
 *.jks
 *.keystore
 key.properties
 amap_key.properties
+android/amap_key.properties
+android/keystore/
+android/key.properties
 
 # ===== Python =====
 __pycache__/
 *.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
 .venv/
 venv/
 backend/.venv/
@@ -21,20 +28,20 @@ backend/.venv/
 # ===== Flutter / Dart =====
 .dart_tool/
 .kotlin/
+.gradle/
 .flutter-plugins
 .flutter-plugins-dependencies
 build/
-pubspec.lock
 *.iml
 .metadata
 _build_*.log
 *.apk
+*.aab
 
 # ===== Android =====
 android/.gradle/
 android/local.properties
 android/app/.cxx/
-android/key.properties
 android/app/src/main/java/io/flutter/plugins/GeneratedPluginRegistrant.java
 
 # ===== IDE / 系统 =====
@@ -42,7 +49,17 @@ android/app/src/main/java/io/flutter/plugins/GeneratedPluginRegistrant.java
 .vscode/
 .DS_Store
 Thumbs.db
+~$*
 
 # ===== 运行日志（含脱敏访问记录，仍不入库） =====
 logs/
+*.log
 backend/out/*_log.txt
+
+# ===== 本地交付物与演示材料（含个人截图/录屏，默认不入公开仓库） =====
+dist/final/
+dist/archive/
+dist/phase_p/*.pptx
+dist/phase_p/*.pdf
+dist/phase_p/slides/
+*.mp4

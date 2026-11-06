@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="620" viewBox="0 0 1200 620" role="img" aria-label="RunLoop architecture">
+  <rect width="1200" height="620" fill="#F4F9FF"/>
+  <text x="50" y="58" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="28" font-weight="700" fill="#123A63">RunLoop 技术架构</text>
+  <text x="50" y="86" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14" fill="#5B7083">Flutter Android → Tailscale private network → Windows Flask/Waitress → AMap Web Service API</text>
+
+  <g font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif">
+    <rect x="50" y="140" width="300" height="300" rx="18" fill="#FFFFFF" stroke="#B9CFE3" stroke-width="2"/>
+    <text x="72" y="180" font-size="20" font-weight="700" fill="#1F5F99">手机端 · Flutter</text>
+    <text x="72" y="218" font-size="14" fill="#243746">高德地图 SDK（地图 / 定位）</text>
+    <text x="72" y="250" font-size="14" fill="#243746">GPS 轨迹与过滤</text>
+    <text x="72" y="282" font-size="14" fill="#243746">TurnEvent 导航状态</text>
+    <text x="72" y="314" font-size="14" fill="#243746">系统 TTS 语音播报</text>
+    <text x="72" y="346" font-size="14" fill="#243746">本地历史 / 离线缓存</text>
+    <text x="72" y="398" font-size="12" fill="#5B7083">手机只负责展示、定位与播报</text>
+
+    <rect x="450" y="140" width="300" height="300" rx="18" fill="#DCEBF7" stroke="#2E75B6" stroke-width="2"/>
+    <text x="472" y="180" font-size="20" font-weight="700" fill="#1F5F99">私有网络 · Tailscale</text>
+    <text x="472" y="218" font-size="14" fill="#243746">Tailnet 私有组网</text>
+    <text x="472" y="250" font-size="14" fill="#243746">Tailscale Serve HTTPS</text>
+    <text x="472" y="282" font-size="14" fill="#243746">仅同一 Tailnet 设备可见</text>
+    <text x="472" y="314" font-size="14" fill="#243746">不暴露公网端口</text>
+    <text x="472" y="346" font-size="14" fill="#243746">不启用 Funnel</text>
+    <text x="472" y="398" font-size="12" fill="#5B7083">电脑必须开机、联网、后端在线</text>
+
+    <rect x="850" y="140" width="300" height="300" rx="18" fill="#FFFFFF" stroke="#B9CFE3" stroke-width="2"/>
+    <text x="872" y="180" font-size="20" font-weight="700" fill="#1F5F99">电脑端 · Windows</text>
+    <text x="872" y="218" font-size="14" fill="#243746">Waitress + Flask</text>
+    <text x="872" y="250" font-size="14" fill="#243746">127.0.0.1:8000</text>
+    <text x="872" y="282" font-size="14" fill="#243746">路线生成 / 距离校准 / 评分</text>
+    <text x="872" y="314" font-size="14" fill="#243746">动态偏航与前向重规划</text>
+    <text x="872" y="346" font-size="14" fill="#243746">高德 Web Service API</text>
+    <text x="872" y="398" font-size="12" fill="#5B7083">高德 Web Key 只保存在后端本地</text>
+
+    <line x1="350" y1="290" x2="440" y2="290" stroke="#2E75B6" stroke-width="3"/>
+    <polygon points="440,290 428,283 428,297" fill="#2E75B6"/>
+    <text x="358" y="278" font-size="13" fill="#5B7083">HTTPS</text>
+
+    <line x1="750" y1="290" x2="840" y2="290" stroke="#2E75B6" stroke-width="3"/>
+    <polygon points="840,290 828,283 828,297" fill="#2E75B6"/>
+    <text x="758" y="278" font-size="13" fill="#5B7083">本地调用</text>
+  </g>
+
+  <rect x="50" y="490" width="1100" height="80" rx="14" fill="#EAF3FC" stroke="#B9CFE3"/>
+  <text x="72" y="522" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14" font-weight="700" fill="#1F5F99">边界说明</text>
+  <text x="72" y="548" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="13" fill="#243746">离线时：已缓存路线、GPS 记录和历史可用；生成新路线或重新规划需要电脑后端在线。Tailscale 不是公网服务器，电脑关机后无法生成新路线。</text>
+</svg>

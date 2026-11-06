@@ -1,0 +1,3 @@
+# Copy this file to android/amap_key.properties and replace the placeholder.
+# The Android platform key must be bound to package com.runloop.app and your signing SHA-1.
+amap.apiKey=YOUR_ANDROID_SDK_KEY

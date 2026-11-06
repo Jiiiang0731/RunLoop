@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="300" viewBox="0 0 1200 300" role="img" aria-label="RunLoop 环跑">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#F4F9FF"/>
+      <stop offset="1" stop-color="#DCEBF7"/>
+    </linearGradient>
+  </defs>
+  <rect width="1200" height="300" fill="url(#bg)"/>
+  <g opacity="0.55" stroke="#B9CFE3" stroke-width="1">
+    <path d="M0 60 H1200 M0 120 H1200 M0 180 H1200 M0 240 H1200"/>
+    <path d="M100 0 V300 M200 0 V300 M300 0 V300 M400 0 V300 M500 0 V300 M600 0 V300 M700 0 V300 M800 0 V300 M900 0 V300 M1000 0 V300 M1100 0 V300"/>
+  </g>
+  <text x="72" y="104" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="18" font-weight="700" fill="#2E75B6" letter-spacing="2">RUNLOOP · 环跑</text>
+  <text x="72" y="176" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="56" font-weight="700" fill="#123A63">把目标距离变成</text>
+  <text x="72" y="240" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="56" font-weight="700" fill="#1F5F99">一条真实可跑的闭环路线</text>
+  <g transform="translate(760 50)">
+    <path d="M40 190 L100 110 L180 92 L250 125 L270 45 L205 10 L135 28 L108 92 L52 110"
+          fill="none" stroke="#2E75B6" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M52 110 L40 190" fill="none" stroke="#2E75B6" stroke-width="4" stroke-linecap="round"/>
+    <circle cx="40" cy="190" r="11" fill="#1F5F99"/>
+    <circle cx="100" cy="110" r="5" fill="#F4F9FF" stroke="#2E75B6" stroke-width="2"/>
+    <circle cx="180" cy="92" r="5" fill="#F4F9FF" stroke="#2E75B6" stroke-width="2"/>
+    <circle cx="250" cy="125" r="5" fill="#F4F9FF" stroke="#2E75B6" stroke-width="2"/>
+    <circle cx="270" cy="45" r="5" fill="#F4F9FF" stroke="#2E75B6" stroke-width="2"/>
+    <circle cx="205" cy="10" r="5" fill="#F4F9FF" stroke="#2E75B6" stroke-width="2"/>
+    <circle cx="135" cy="28" r="5" fill="#F4F9FF" stroke="#2E75B6" stroke-width="2"/>
+    <circle cx="108" cy="92" r="5" fill="#F4F9FF" stroke="#2E75B6" stroke-width="2"/>
+    <text x="22" y="222" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="15" fill="#1F5F99">起点 / 终点</text>
+    <text x="250" y="18" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="15" fill="#2E75B6">闭环</text>
+  </g>
+</svg>
