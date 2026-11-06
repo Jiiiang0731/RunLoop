@@ -12,8 +12,8 @@ import 'package:runloop/utils/map_icons.dart';
 /// 2. 两条轨道必须真正分开（间距 ≈ 2×offsetPx 换算的米数），
 ///    不是把同一条线画两遍。
 void main() {
-  const double lat0 = 30.54;
-  const double lng0 = 114.03;
+  const double lat0 = 30.45;
+  const double lng0 = 114.17;
 
   /// 东西向折线：向东 [n] 个点，相邻约 [stepM] 米。
   List<LatLng> eastLine(int n, {double stepM = 30}) {

@@ -126,8 +126,8 @@ class TestGenerator(unittest.TestCase):
         self.assertTrue(res.candidates[0].recommended)
 
     def test_anchor_mode_returns_closed_candidate(self):
-        anchors = [(114.0275, 30.5350), (114.0300, 30.5350),
-                   (114.0300, 30.5320), (114.0275, 30.5320)]
+        anchors = [(114.1645, 30.4420), (114.1670, 30.4420),
+                   (114.1670, 30.4390), (114.1645, 30.4390)]
         opts = GenerateOptions(target_m=2500, seeds=[1], tol_m=500,
                                anchors=anchors, max_api_calls=200)
         res = generate_candidates(MockPlanner(factor=1.25), anchors[0], opts)

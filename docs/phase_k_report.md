@@ -248,7 +248,7 @@ XFF 兜底。三场景实测（400 快速路径，零配额成本）：
 | `POST /api/route/generate` | 200 / 14.76s（5km，55 次真实调用，ok=1/1）；200 / 37.64s（15km 长请求，143 次调用，达标 score 51.0）；400 校验路径正常 |
 | `POST /api/route/pois` | 200 / **0.27s**，真实 POI 返回（cum=1049.4m 处「小村人家」），日志 `dev=b42f74ac samples=1 throttled=N` |
 
-**手机连通性预检（PC 侧观测）**：`tailscale ping your-phone.tail120f1d.ts.net` →
+**手机连通性预检（PC 侧观测）**：`tailscale ping your-phone.your-tailnet.ts.net` →
 pong **via DERP(nue) 中继 528–601ms**（NAT 打洞未成但中继兜底连通）——B/C/D
 经移动数据可工作的通道级证据；生成请求为单次长请求，中继延迟对 30–45s 的
 生成过程影响可忽略。

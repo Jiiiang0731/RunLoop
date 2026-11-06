@@ -322,11 +322,11 @@ class TestGenerateFlow(ServerApiBase):
 class TestAnchorMode(ServerApiBase):
     """阶段 N：anchors 参数接入 /api/route/generate（离线替身）。"""
 
-    ANCHORS = [[114.027494, 30.535040], [114.027651, 30.532929],
-               [114.026649, 30.530919], [114.027056, 30.529165]]
+    ANCHORS = [[114.164494, 30.442040], [114.164651, 30.439929],
+               [114.163649, 30.437919], [114.164056, 30.436165]]
 
     def test_anchor_validation(self):
-        base = {"origin": {"lng": 114.027494, "lat": 30.535040},
+        base = {"origin": {"lng": 114.164494, "lat": 30.442040},
                 "target_m": 2500}
         r = _post(self.client, "/api/route/generate",
                   {**base, "anchors": self.ANCHORS[:3]})
@@ -362,7 +362,7 @@ class TestAnchorMode(ServerApiBase):
     def test_anchor_candidate_quality_contract(self):
         loop = types.SimpleNamespace(
             distance_m=2500.0, closure_m=1.5, start_snap_m=2.0, duration_s=1500.0,
-            polyline=[(114.027, 30.535), (114.028, 30.534), (114.027, 30.535)],
+            polyline=[(114.164, 30.442), (114.165, 30.441), (114.164, 30.442)],
             segments=[])
         metrics = {
             "turn_density": 1.0, "turns": 2, "straight_max_m": 300.0,
@@ -380,7 +380,7 @@ class TestAnchorMode(ServerApiBase):
             candidates=[cand], total_api_calls=20, stage_times={})
         try:
             r = _post(self.client, "/api/route/generate",
-                      {"origin": {"lng": 114.027494, "lat": 30.535040},
+                      {"origin": {"lng": 114.164494, "lat": 30.442040},
                        "anchors": self.ANCHORS, "target_m": 2500})
         finally:
             server_mod.generate_candidates = self._saved_gen

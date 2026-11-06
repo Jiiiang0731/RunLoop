@@ -16,7 +16,7 @@ void main() {
     SharedPreferences.setMockInitialValues(<String, Object>{});
   });
 
-  const String base = 'https://unit-test.tail120f1d.ts.net';
+  const String base = 'https://unit-test.your-tailnet.ts.net';
 
   RerouteClient svcWith(http.Response Function(http.Request) handler) {
     return RerouteClient(

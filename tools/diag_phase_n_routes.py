@@ -189,7 +189,7 @@ def run_case(label: str, planner, origin, target: int, seeds, max_calls: int = 6
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--origin", default="114.03,30.54")
+    ap.add_argument("--origin", default="114.17,30.45")
     ap.add_argument("--targets", default="1000,2500,5000")
     ap.add_argument("--seeds", default="1,2,3")
     ap.add_argument("--modes", default="walk,bike")

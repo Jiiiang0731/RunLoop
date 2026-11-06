@@ -25,7 +25,7 @@ class FakePlanner:
                                           distance_m=dist, polyline=pts)])
 
 
-def square(side_m=600.0, lat=30.535, lng=114.0275):
+def square(side_m=600.0, lat=30.442, lng=114.1645):
     dlat = side_m / 110574.0
     dlng = side_m / (111320.0 * __import__("math").cos(__import__("math").radians(lat)))
     return [(lng, lat), (lng + dlng, lat),

@@ -1,7 +1,7 @@
 {
   "purpose": "同一真实高德数据下，对比阶段 N 改动前 HEAD d645c2b 与当前工作树（仅骨架路径）",
   "old_head": "d645c2b",
-  "start": [114.027494, 30.53504],
+  "start": [114.164494, 30.44204],
   "seeds": [1],
   "old_results": [
     {"target": 5000, "dist": 4901.3, "err": -98.7, "within": true, "closure": 0.59, "turns": 26, "density": 5.26, "rep": 0.267, "score": 49.4, "calls": 76, "wall_s": 19.4},
